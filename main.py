@@ -20,7 +20,7 @@ def main():
     data_dir = base_dir / 'data' 
     
     data_prep= DataPreprocessor(data_dir=data_dir)
-    data_prep.prep_naver_data(sampling_rate=0.01)
+    data_prep.prep_naver_data(sampling_rate=0.1)
     preped_file_path = data_prep.preprocess()
     
     # 3. 모델 학습 및 평가
