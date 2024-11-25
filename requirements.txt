@@ -1,0 +1,8 @@
+tweepy
+pandas
+numpy
+emoji
+konlpy
+transformers
+torch
+sklearn
