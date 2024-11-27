@@ -16,11 +16,11 @@ logger = logging.getLogger(__name__)
 exp_name = "model_train_optuna"  # 실험 이름
 # dataset
 data_name = 'naver_movie_review'
-sampling_rate = 0.001
+sampling_rate = 1.0
 model_register_threshold = 0.6
 #Optuna의 기본 최적화 알고리즘인 Tree-structured Parzen Estimators (TPE)를 사용하고 있습니다. TPE는 베이지안 최적화의 한 종류입
 sampler_type = "tpe"
-n_trials = 2
+n_trials = 50
 
 class ModelTrainer:
     """모델 학습을 위한 클래스"""
@@ -43,7 +43,7 @@ class ModelTrainer:
             'num_train_epochs': trial.suggest_int('num_train_epochs', 2, 5, 10),
             'batch_size': trial.suggest_categorical('batch_size', [16, 32])
         }
-        num_unfrozen_layers = trial.suggest_int('num_unfrozen_layers', 1, 4)
+        num_unfrozen_layers = trial.suggest_int('num_unfrozen_layers', 1, 4, 10)
         
         # Create and train model
         factory = ModelFactory()
