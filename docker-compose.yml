@@ -1,0 +1,30 @@
+version: "2.3"
+services:
+  airflow:
+    image: ml4-image
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ml4-container
+    ports:
+      - "8080:8080"
+      - "5050:5050"
+    volumes:
+      - "./dags:/usr/local/ml4/dags"
+      - "./models:/usr/local/ml4/models"
+      - "./data:/usr/local/ml4/data"
+      - "./init-scripts:/init-scripts"
+      - "./src:/usr/local/ml4/src"
+    environment:
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////usr/local/ml4/airflow.db
+      - GUNICORN_TIMEOUT=120
+      - GUNICORN_WORKERS=4
+      - AIRFLOW__WEBSERVER__WORKER_REFRESH_INTERVAL=6000
+      - AIRFLOW__WEBSERVER__WORKER_TIMEOUT=120
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    command: /init-scripts/init.sh
