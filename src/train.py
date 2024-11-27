@@ -14,10 +14,13 @@ from models.model_registry import ModelRegistry
 logger = logging.getLogger(__name__)
 
 exp_name = "model_train_optuna"  # 실험 이름
+# dataset
 data_name = 'naver_movie_review'
+sampling_rate = 0.001
 model_register_threshold = 0.6
 #Optuna의 기본 최적화 알고리즘인 Tree-structured Parzen Estimators (TPE)를 사용하고 있습니다. TPE는 베이지안 최적화의 한 종류입
-sampling_rate = 1.0
+sampler_type = "tpe"
+n_trials = 2
 
 class ModelTrainer:
     """모델 학습을 위한 클래스"""
@@ -290,7 +293,7 @@ def main():
     
     # 데이터 준비
     
-    sampling_rate = 0.001
+    
     
     base_dir = Path(__file__).parent
     data_dir = base_dir.parent / 'data'
@@ -335,7 +338,10 @@ def main():
             dataset_name=data_name,
             data_file=preped_file_path,
             base_model_dir=base_model_dir,
-            pretrained_model_dir=pretrained_model_dir
+            pretrained_model_dir=pretrained_model_dir,
+            n_trials=n_trials,
+            sampler_type=sampler_type
+
         )
         
         results[model_name] = {'run_id': run_id, 'metrics': metrics}

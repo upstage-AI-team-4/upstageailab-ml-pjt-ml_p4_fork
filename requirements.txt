@@ -2,7 +2,6 @@
 pandas
 numpy
 
-
 scikit-learn
 
 matplotlib
@@ -13,14 +12,16 @@ streamlit
 kiwipiepy
 soynlp
 konlpy
-transformers
-torch
-transformers[torch]
 
+torch
+transformers
+transformers[torch]
 pytorch-lightning
+torchvision
 
 mlflow
 ydata-profiling
 
 emoji
 tweepy
+optuna

@@ -40,7 +40,7 @@ class Arg:
         # 학습 관련 설정
         self.batch_size: int = 32
         self.lr: float = 5e-6
-        self.epochs: int = 1 # 20
+        self.epochs: int = 20
         self.max_length: int = 150
         self.report_cycle: int = 100
         self.cpu_workers: int = os.cpu_count()

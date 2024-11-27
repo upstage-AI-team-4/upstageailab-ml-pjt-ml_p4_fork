@@ -4,13 +4,10 @@ import pandas as pd
 import torch
 from models.model_factory import ModelFactory
 from models.model_registry import ModelRegistry
-<<<<<<< HEAD
 from typing import Dict, Tuple, List, Optional, Any
 import logging
 import mlflow
 from transformers import pipeline
-=======
->>>>>>> c65065e06dc6f892a3bf2f47965983ee8213ee05
 
 logger = logging.getLogger(__name__)
 
