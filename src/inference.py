@@ -3,7 +3,7 @@ from pathlib import Path
 import pandas as pd
 import torch
 from models.model_factory import ModelFactory
-from model_registry import ModelRegistry
+from models.model_registry import ModelRegistry
 
 def load_model_from_mlflow(run_id: str, model_name: str) -> tuple:
     """
