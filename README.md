@@ -8,6 +8,8 @@
 |                            팀장, 피처조정 및 선별                             |                         피처엔지니어링                             |           모델링, AutoML                       |                                       베이스라인 코드 분석                   |                                  좌표 데이터 API 수집                        |
 ## 0. Overview
 
+pip install -r requriements.txt
+
 ### Environment
 
 - **IDE 및 코드 편집기**

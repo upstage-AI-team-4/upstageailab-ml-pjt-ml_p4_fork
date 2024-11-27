@@ -1,0 +1,16 @@
+tweepy
+pandas
+numpy
+emoji
+konlpy
+transformers
+torch
+scikit-learn
+kiwipiepy
+matplotlib
+seaborn
+transformers[torch]
+plotly
+streamlit
+pytorch-lightning
+soynlp
