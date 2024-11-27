@@ -283,6 +283,10 @@ class BaseSentimentModel(ABC):
         """Confusion matrix 생성 및 저장"""
         print("\n=== Confusion Matrix 생성 ===")
         
+        # Matplotlib 백엔드를 Agg로 설정 (GUI 없이 동작)
+        import matplotlib
+        matplotlib.use('Agg')
+        
         # 예측 및 실제 레이블 가져오기
         preds = self.trainer.predict(self.val_dataset).predictions.argmax(-1)
         true_labels = self.val_labels
