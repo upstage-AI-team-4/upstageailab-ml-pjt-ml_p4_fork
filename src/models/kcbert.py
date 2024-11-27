@@ -40,7 +40,7 @@ class Arg:
         # 학습 관련 설정
         self.batch_size: int = 32
         self.lr: float = 5e-6
-        self.epochs: int = 20
+        self.epochs: int = 1 # 20
         self.max_length: int = 150
         self.report_cycle: int = 100
         self.cpu_workers: int = os.cpu_count()
@@ -260,7 +260,7 @@ class KcBERTClassifier(LightningModule):
                 },
                 artifact_path="model",
                 task="sentiment-analysis",
-                registered_model_name="KcBERT_sentiment_classifier"
+                registered_model_name=f"KcBERT_sentiment_classifier_base_epoch_{self.args.epochs}"
             )
         
         print(f"모델이 {save_dir}에 저장되었습니다.")
