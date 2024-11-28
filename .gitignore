@@ -1,17 +1,14 @@
 # Created by https://www.toptal.com/developers/gitignore/api/python,jupyternotebooks,visualstudiocode,venv,dotenv
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,jupyternotebooks,visualstudiocode,venv,dotenv
 
-<<<<<<< HEAD
+models/
 .cursorrules
 backup/
-=======
-models/
-
+tmp/
 mlruns/
 mlartifacts/
 lightning_logs/
 
->>>>>>> c65065e06dc6f892a3bf2f47965983ee8213ee05
 ### dotenv ###
 .env
 
