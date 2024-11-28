@@ -1,32 +1,33 @@
 import os
 import pandas as pd
-
-from pprint import pprint
-
 import torch
-from torch.utils.data import Dataset, DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import ExponentialLR
-
 from pytorch_lightning import LightningModule, Trainer, seed_everything
-
 from transformers import BertForSequenceClassification, BertTokenizer, AdamW
-
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingWarmRestarts
 import re
 import emoji
 from soynlp.normalizer import repeat_normalize
-
 from pathlib import Path
-
 import mlflow
 from datetime import datetime
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 import numpy as np
+
+from utils.config import Config
+from utils.mlflow_utils import MLflowLogger
+from models.model_registry import ModelRegistry
+
+config = Config()
 
 class Arg:
     def __init__(self):
         self.random_seed: int = 42
-        self.base_dir: Path = Path(__file__).parent.parent.parent
+        self.base_dir: Path = Path(__file__).parent.parent
         
         # 모델 관련 설정
         self.pretrained_model: str = str(self.base_dir / 'models' / 'pretrained' / 'KcBERT')
@@ -36,11 +37,11 @@ class Arg:
         self.data_dir: Path = self.base_dir / 'data' / 'raw' / 'naver_movie_review'
         self.train_data_path: Path = self.data_dir / 'ratings_train.txt'
         self.val_data_path: Path = self.data_dir / 'ratings_test.txt'
-        
+        print(f'Data directory: {self.data_dir}\nModel directory: {self.pretrained_model}')
         # 학습 관련 설정
         self.batch_size: int = 32
         self.lr: float = 5e-6
-        self.epochs: int = 20
+        self.epochs: int = 1
         self.max_length: int = 150
         self.report_cycle: int = 100
         self.cpu_workers: int = os.cpu_count()
@@ -65,10 +66,8 @@ class KcBERTClassifier(LightningModule):
             else self.args.pretrained_model
         )
         
-        # MLflow 설정
-        self.run_id = None
-        mlflow.set_tracking_uri("http://127.0.0.1:5000")
-        mlflow.set_experiment("sentiment_classification_kcbert")
+        # MLflow 로거 추가
+        self.mlflow_logger = MLflowLogger()
         
         # 메트릭을 저장할 리스트
         self.validation_step_outputs = []
@@ -85,9 +84,15 @@ class KcBERTClassifier(LightningModule):
         self.train_data = pd.read_csv(self.args.train_data_path, sep='\t')
         self.val_data = pd.read_csv(self.args.val_data_path, sep='\t')
         
+        # 샘플링은 한 번만 수행
+        if config.data['sampling_rate'] != 1.0:
+            self.train_data = self.train_data.sample(frac=config.data['sampling_rate'], random_state=42)
+            self.val_data = self.val_data.sample(frac=config.data['sampling_rate'], random_state=42)
+            print(f"샘플링 완료: train({len(self.train_data)}), val({len(self.val_data)})")
+
         # 전처리
-        self.train_data = self.preprocess_dataframe(self.train_data)
-        self.val_data = self.preprocess_dataframe(self.val_data)
+        self.train_data_preped = self.preprocess_dataframe(self.train_data)
+        self.val_data_preped = self.preprocess_dataframe(self.val_data)
         
         print(f"데이터 로드 완료: train({len(self.train_data)}), val({len(self.val_data)})")
 
@@ -116,8 +121,8 @@ class KcBERTClassifier(LightningModule):
     def train_dataloader(self):
         """학습 데이터로더"""
         dataset = TensorDataset(
-            torch.tensor(self.train_data['document'].tolist()),
-            torch.tensor(self.train_data['label'].tolist())
+            torch.tensor(self.train_data_preped['document'].tolist()),
+            torch.tensor(self.train_data_preped['label'].tolist())
         )
         
         return DataLoader(
@@ -130,8 +135,8 @@ class KcBERTClassifier(LightningModule):
     def val_dataloader(self):
         """검증 데이터로더"""
         dataset = TensorDataset(
-            torch.tensor(self.val_data['document'].tolist()),
-            torch.tensor(self.val_data['label'].tolist())
+            torch.tensor(self.val_data_preped['document'].tolist()),
+            torch.tensor(self.val_data_preped['label'].tolist())
         )
         
         return DataLoader(
@@ -200,6 +205,30 @@ class KcBERTClassifier(LightningModule):
         self.validation_step_outputs.append(step_output)
         return step_output
 
+    def save_confusion_matrix(self, y_true, y_pred, normalize=True):
+        """혼동 행렬 생성 및 저장"""
+        cm = confusion_matrix(y_true, y_pred)
+        if normalize:
+            cm = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+            fmt = '.2f'
+        else:
+            fmt = 'd'
+        
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt=fmt, cmap='Blues')
+        plt.title('Normalized Confusion Matrix' if normalize else 'Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        
+        confusion_matrix_dir = Path("evaluation")
+        confusion_matrix_dir.mkdir(parents=True, exist_ok=True)
+        confusion_matrix_path = confusion_matrix_dir / f"confusion_matrix{'_normalized' if normalize else ''}.png"
+        
+        plt.savefig(confusion_matrix_path)
+        plt.close()
+        
+        return str(confusion_matrix_path)
+
     def on_validation_epoch_end(self):
         val_loss = torch.stack([x['loss'] for x in self.validation_step_outputs]).mean()
         y_true = []
@@ -209,21 +238,43 @@ class KcBERTClassifier(LightningModule):
             y_true.extend(out['y_true'])
             y_pred.extend(out['y_pred'])
 
-        metrics = [
-            metric(y_true=y_true, y_pred=y_pred)
-            for metric in (accuracy_score, precision_score, recall_score, f1_score)
-        ]
-
-        mlflow.log_metrics({
+        metrics = {
             'val_loss': val_loss.item(),
-            'val_acc': metrics[0],
-            'val_precision': metrics[1],
-            'val_recall': metrics[2],
-            'val_f1': metrics[3],
-        }, step=self.global_step)
+            'val_acc': accuracy_score(y_true, y_pred),
+            'val_precision': precision_score(y_true, y_pred),
+            'val_recall': recall_score(y_true, y_pred),
+            'val_f1': f1_score(y_true, y_pred)
+        }
+        
+        # 혼동 행렬 생성 및 저장 (일반 + 정규화)
+        confusion_matrix_path = self.save_confusion_matrix(y_true, y_pred, normalize=False)
+        normalized_cm_path = self.save_confusion_matrix(y_true, y_pred, normalize=True)
+        
+        # MLflow에 메트릭과 데이터셋 정보 로깅
+        self.mlflow_logger.log_evaluate(
+            metrics=metrics,
+            model=self.bert,
+            tokenizer=self.tokenizer,
+            train_data=self.train_data,
+            val_data=self.val_data,
+            model_name='KcBERT',
+            dataset_name=config.data['name'],
+            sampling_rate=config.data['sampling_rate'],
+            confusion_matrix_path=[confusion_matrix_path, normalized_cm_path]
+        )
+        
+        # 모델 레지스트리에 등록 시도
+        registry = ModelRegistry()
+        registry.add_model(
+            model_name='KcBERT',
+            run_id=self.run_id,
+            metrics=metrics,
+            dataset_name=config.data['name'],
+            sampling_rate=config.data['sampling_rate'],
+            threshold=config.model['register_threshold']
+        )
         
         self.validation_step_outputs.clear()
-        
         return {'val_loss': val_loss, 'val_metrics': metrics}
 
     def configure_optimizers(self):
@@ -253,30 +304,45 @@ class KcBERTClassifier(LightningModule):
         
         # MLflow에 모델 아티팩트 로깅
         if self.run_id:
-            mlflow.transformers.log_model(
-                transformers_model={
-                    "model": self.bert,
-                    "tokenizer": self.tokenizer
-                },
-                artifact_path="model",
-                task="sentiment-analysis",
-                registered_model_name=f"KcBERT_sentiment_classifier_base_epoch_{self.args.epochs}"
+            mlflow.pytorch.log_model(
+                self.bert,
+                "model",
+                registered_model_name='KcBERT'
             )
-        
-        print(f"모델이 {save_dir}에 저장되었습니다.")
+            # 토크나이저 저장
+            mlflow.log_artifacts(str(save_dir), "tokenizer")
+            logger.info(f"모델과 토크나이저가 MLflow에 저장되었습니다.")
 
 def main():
+    # MLflow 설정
+    file_path = Path(__file__)
+    file_name = file_path.stem
+    config.mlflow['experiment_name'] = config.mlflow['experiment_name'] + '_' + file_name
+    print(f'Experiment name: {config.mlflow["experiment_name"]}')
+    
     print("Using PyTorch Ver", torch.__version__)
     print("Fix Seed:", args.random_seed)
     seed_everything(args.random_seed)
     model = KcBERTClassifier(args)
-
+    
+    # MLflow 로거 생성
+    mlflow_logger = MLflowLogger()
+    
+    # run_name 생성 - 단순화
+    run_name = f"KcBERT_train_{datetime.now().strftime('%Y%m%d')}"
+    
     # MLflow 실행 시작
-    with mlflow.start_run() as run:
+    with mlflow_logger.run_with_logging(
+        "training",
+        "KcBERT",  # 단순화된 모델 이름
+        config.data['name'],
+        config.data['sampling_rate'],
+        run_name=run_name
+    ) as run:
         model.run_id = run.info.run_id
         
         # 하이퍼파라미터 로깅
-        mlflow.log_params({
+        mlflow_logger.log_params({
             'learning_rate': args.lr,
             'epochs': args.epochs,
             'batch_size': args.batch_size,

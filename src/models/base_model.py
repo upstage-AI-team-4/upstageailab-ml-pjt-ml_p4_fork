@@ -3,7 +3,7 @@ import os
 import pandas as pd
 import torch
 from sklearn.model_selection import train_test_split
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, f1_score, precision_score, recall_score
 from transformers import Trainer, TrainingArguments
 import numpy as np
 import torch.nn.functional as F
@@ -13,111 +13,393 @@ from sklearn.metrics import confusion_matrix
 from pathlib import Path
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 from torch.utils.data import Dataset
+from typing import Optional, Dict, Any
+from datetime import datetime
+import mlflow
+from utils.mlflow_utils import MLflowLogger
+import tempfile
+import shutil
+import logging
+from torch.utils.data import DataLoader
 
-class SentimentDataset(torch.utils.data.Dataset):
+logger = logging.getLogger(__name__)
+
+class SentimentDataset(Dataset):
     def __init__(self, encodings, labels):
         self.encodings = encodings
         self.labels = labels
 
     def __getitem__(self, idx):
         item = {key: torch.tensor(val[idx]) for key, val in self.encodings.items()}
-        item['labels'] = torch.tensor(int(self.labels.iloc[idx]))
+        item['labels'] = torch.tensor(self.labels[idx])
         return item
 
     def __len__(self):
         return len(self.labels)
 
-    def to_pandas(self):
-        """Convert dataset to pandas DataFrame"""
+    def to_pandas(self) -> pd.DataFrame:
+        """데이터셋을 pandas DataFrame으로 변환"""
+        # input_ids를 numpy 배열로 변환
+        input_ids = self.encodings['input_ids'].numpy()
+        attention_mask = self.encodings['attention_mask'].numpy()
+        
+        # 라벨도 numpy 배열로 변환
+        labels = np.array(self.labels)
+        
         return pd.DataFrame({
-            'text': self.encodings['input_ids'],
-            'label': self.labels
+            'text': input_ids.tolist(),  # 텍스트는 리스트로 저장
+            'label': labels,
+            'attention_mask': attention_mask.tolist()
         })
 
 class BaseSentimentModel(ABC):
-    def __init__(self, data_file: Path, model_dir: Path, pretrained_model_name: str, pretrained_model_dir: Path):
+    def __init__(self, data_file: Path, pretrained_model_name: str, batch_size: int = 32):
         self.data_file = data_file
-        self.model_dir = model_dir
         self.pretrained_model_name = pretrained_model_name
-        self.pretrained_model_dir = pretrained_model_dir
-        os.makedirs(self.model_dir, exist_ok=True)
-        print(f'\n===Sentiment Model 인스턴스 생성 완료...')
+        self.mlflow_logger = None
+        self.batch_size = batch_size
         
-    @abstractmethod
-    def load_model(self):
-        pass
+        # 데이터셋과 DataLoader
+        self.train_dataset = None
+        self.val_dataset = None
+        self.test_dataset = None
+        self.train_dataloader = None
+        self.val_dataloader = None
+        self.test_dataloader = None
+        
+        # device 설정
+        self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        logger.info(f'Using device: {self.device}')
+        
+        # 모델 디렉토리 설정
+        self.pretrained_model_dir = Path(__file__).parent.parent.parent / 'models' / 'pretrained' / pretrained_model_name.split('/')[-1]
+        self.model_dir = Path(tempfile.mkdtemp(prefix='model_'))
+        
+        self.pretrained_model_dir.mkdir(parents=True, exist_ok=True)
+        
+        logger.info(f'=== Sentiment Model 인스턴스 생성 완료...')
+        logger.info(f'Pretrained 모델 경로: {self.pretrained_model_dir}')
+        logger.info(f'임시 작업 디렉토리: {self.model_dir}')
     
-    def load_data(self):
-        self.data = pd.read_csv(self.data_file)
-        print(f"데이터를 {self.data_file}에서 로드했습니다.")
-
-    def prepare_data(self):
+    def __del__(self):
+        """임시 디렉토리 정리"""
+        if hasattr(self, 'model_dir') and self.model_dir.exists():
+            shutil.rmtree(self.model_dir)
+            logger.info(f'임시 디렉토리 삭제 완료: {self.model_dir}')
+    
+    def set_mlflow_logger(self, mlflow_logger: 'MLflowLogger'):
+        """MLflow 로거 설정"""
+        self.mlflow_logger = mlflow_logger
+    
+    def log_model_info(self, dataset_name: str, run_name: Optional[str] = None):
+        """모델 정보 로깅"""
+        if not self.mlflow_logger:
+            return
+            
+        with self.mlflow_logger.start_run(run_name=run_name) as run:
+            # 기본 파라미터 로깅
+            self.mlflow_logger.log_params({
+                'model_name': self.pretrained_model_name,
+                'dataset_name': dataset_name,
+                'model_dir': str(self.model_dir),
+                'timestamp': datetime.now().strftime('%Y%m%d_%H%M%S')
+            })
+            
+            return run.info.run_id
+    
+    def log_training_info(self, train_args: Dict[str, Any]):
+        """학습 관련 정보 로깅"""
+        if not self.mlflow_logger:
+            return
+            
+        self.mlflow_logger.log_params({
+            'learning_rate': train_args.get('learning_rate'),
+            'num_train_epochs': train_args.get('num_train_epochs'),
+            'batch_size': train_args.get('batch_size'),
+            'num_unfrozen_layers': train_args.get('num_unfrozen_layers')
+        })
+    
+    def log_metrics(self, metrics: Dict[str, float]):
+        """평가 메트릭 로깅"""
+        if not self.mlflow_logger:
+            return
+            
+        self.mlflow_logger.log_metrics(metrics)
+    
+    def log_datasets(self, dataset_name: str):
+        """데이터셋 정보 로깅"""
+        if self.train_dataset is None or self.val_dataset is None:
+            logger.error("데이터셋이 로드되지 않았습니다.")
+            return
+        
+        try:
+            # 데이터셋 정보 로깅
+            dataset_info = {
+                'dataset_name': dataset_name,
+                'train_samples': len(self.train_dataset),
+                'val_samples': len(self.val_dataset),
+                'test_samples': len(self.test_dataset) if self.test_dataset else 0
+            }
+            
+            if self.mlflow_logger:
+                self.mlflow_logger.log_params(dataset_info)
+                logger.info(f"데이터셋 정보 로깅 완료: {dataset_info}")
+        except Exception as e:
+            logger.error(f"데이터셋 정보 로깅 중 오류 발생: {str(e)}")
+    
+    def log_model_artifacts(self, dataset_name: str) -> Optional[str]:
         """
-        Prepare data for training by converting tokens back to sentences
+        모델 아티팩트 로깅 및 버전 관리
+        Returns:
+            등록된 모델 버전
         """
-        # Convert tokens (list of tuples) to sentence
-        def tokens_to_sentence(tokens_str):
-            try:
-                tokens = eval(tokens_str)  # string to list of tuples
-                # Extract only the tokens (first element of each tuple)
-                words = [token[0] for token in tokens]
-                return ' '.join(words)
-            except:
-                return ''
+        if not self.mlflow_logger:
+            return None
+        
+        # 모델 아티팩트 로깅
+        self.mlflow_logger.log_model_artifacts(
+            model=self.model,
+            tokenizer=self.tokenizer,
+            model_name=self.pretrained_model_name,
+            dataset_name=dataset_name
+        )
+        
+        # 새 버전 등록
+        version = self.mlflow_logger.register_model_version(
+            run_id=mlflow.active_run().info.run_id,
+            model_name=self.pretrained_model_name,
+            dataset_name=dataset_name
+        )
+        
+        if version:
+            logger.info(f"모델 버전 {version} 등록 완료")
+            # 버전 정보 로깅
+            self.mlflow_logger.log_params({
+                'model_version': version,
+                'model_registry_stage': self.mlflow_logger.config.model_registry_stage
+            })
+        
+        return version
+    
+    def log_confusion_matrix(self):
+        """Confusion Matrix 생성 및 로깅"""
+        if not self.mlflow_logger:
+            return
+            
+        # 일반 confusion matrix
+        self.save_confusion_matrix(normalize=False)
+        self.mlflow_logger.log_artifacts(
+            str(self.model_dir / "confusion_matrix.png"), 
+            "confusion_matrices"
+        )
+        
+        # 정규화된 confusion matrix
+        self.save_confusion_matrix(normalize=True)
+        self.mlflow_logger.log_artifacts(
+            str(self.model_dir / "confusion_matrix_normalized.png"), 
+            "confusion_matrices"
+        )
+    
+    def log_prediction(self, text: str, sentiment: str, confidence: float):
+        """예측 결과 로깅"""
+        if not self.mlflow_logger:
+            return
+            
+        with self.mlflow_logger.start_run(nested=True):
+            self.mlflow_logger.log_metrics({
+                'prediction_confidence': confidence
+            })
+            self.mlflow_logger.log_params({
+                'input_text': text,
+                'predicted_sentiment': sentiment
+            })
+    
+    def load_model(self, run_id: Optional[str] = None):
+        """
+        MLflow 또는 Hugging Face에서 모 
+        Args:
+            run_id: MLflow run ID (있으면 MLflow에서 로드)
+        """
+        try:
+            if run_id:
+                # MLflow에서 모델 로드
+                logged_model = f"runs:/{run_id}/model"
+                self.model = mlflow.transformers.load_model(logged_model)
+                self.tokenizer = self.model['tokenizer']
+                self.model = self.model['model']
+                logger.info(f"MLflow에서 모델 로드 완료 (run_id: {run_id})")
+            else:
+                # Hugging Face에서 직접 다운로드
+                self.model = AutoModelForSequenceClassification.from_pretrained(
+                    self.pretrained_model_name,
+                    num_labels=2
+                )
+                self.tokenizer = AutoTokenizer.from_pretrained(self.pretrained_model_name)
+                logger.info(f"Hugging Face에서 모델 로드 완료 ({self.pretrained_model_name})")
+        except Exception as e:
+            logger.error(f"모델 로드 실패: {str(e)}")
+            raise
+    
+    def save_model(self):
+        """모델 저장"""
+        try:
+            if self.mlflow_logger is None:
+                logger.warning("MLflow logger가 설정되지 않았습니다.")
+                return
+            
+            # Pipeline 생성
+            from transformers import pipeline
+            device = 0 if torch.cuda.is_available() else -1  # GPU 사용 가능하면 0, 아니면 -1
+            
+            nlp = pipeline(
+                task="text-classification",
+                model=self.model,
+                tokenizer=self.tokenizer,
+                device=device,
+                model_kwargs={"device_map": "auto"}  # device mapping 자동 설정
+            )
+            
+            # 모델 카드 정보 추가
+            model_card = {
+                "license": "MIT",  # 라이선스 정보 추가
+                "tags": ["text-classification", "sentiment-analysis", "korean"],
+                "description": "Korean sentiment analysis model trained on Naver Movie Review dataset",
+                "model-index": [
+                    {
+                        "name": self.pretrained_model_name,
+                        "results": []
+                    }
+                ]
+            }
+            
+            # MLflow에 모델 저장
+            mlflow.transformers.log_model(
+                transformers_model=nlp,
+                artifact_path="model",
+                task="text-classification",
+                input_example=["이 영화 정 재미있어요!", "별로였습니다."],
+                signature=mlflow.models.signature.infer_signature(
+                    model_input=["이 영화 정말 재미있어요!"],
+                    model_output=[{"label": "POSITIVE", "score": 0.9}]
+                ),
+                metadata=model_card  # 모델 카드 정보 추가
+            )
+            logger.info(f"모델이 MLflow에 저장되었습니다. (device: {device})")
+            
+        except Exception as e:
+            logger.error(f"모델 저장 중 오류 발생: {str(e)}")
+            raise
+    
+    def create_dataset(self, df: pd.DataFrame, max_length: int) -> SentimentDataset:
+        """데이터셋 생성"""
+        encodings = self.tokenizer(
+            df['text'].tolist(),
+            truncation=True,
+            padding=True,
+            max_length=max_length,
+            return_tensors="pt"
+        )
+        return SentimentDataset(encodings, df['label'].values)
 
-        print("데이터 준비 시작...")
-        print(f"전체 데이터 크기: {len(self.data)}")
-        
-        # Convert tokens to sentences
-        self.data['sentence'] = self.data['tokens'].apply(tokens_to_sentence)
-        
-        # Remove empty sentences
-        empty_mask = self.data['sentence'].str.strip() != ''
-        self.data = self.data[empty_mask]
-        print(f"빈 문장 제거 후 데이터 크기: {len(self.data)}")
-        # Prepare train/val split
-        train_texts, val_texts, train_labels, val_labels = train_test_split(
-            self.data['sentence'], 
-            self.data['label'], 
-            test_size=0.2, 
-            random_state=42
-        )
-        
-        print("토큰화 시작...")
-        self.train_encodings = self.tokenizer(
-            list(train_texts), 
-            truncation=True, 
-            padding=True, 
-            max_length=128
-        )
-        self.val_encodings = self.tokenizer(
-            list(val_texts), 
-            truncation=True, 
-            padding=True, 
-            max_length=128
-        )
-        
-        self.train_labels = train_labels.reset_index(drop=True)
-        self.val_labels = val_labels.reset_index(drop=True)
-        
-        # Create datasets
-        self.train_dataset = SentimentDataset(self.train_encodings, self.train_labels)
-        self.val_dataset = SentimentDataset(self.val_encodings, self.val_labels)
-        
-        print(f"학습 데이터: {len(train_texts)}개")
-        print(f"검증 데이터: {len(val_texts)}개")
-        
-    def compute_metrics(self, pred):
-        labels = pred.label_ids
-        preds = pred.predictions.argmax(-1)
-        precision, recall, f1, _ = precision_recall_fscore_support(labels, preds, average='binary')
-        acc = accuracy_score(labels, preds)
-        return {
-            'accuracy': acc, 
-            'precision': precision, 
-            'recall': recall, 
-            'f1': f1
-        }
+    def load_data(self, sampling_rate: float = 1.0, max_length: int = 256):
+        """데이터 로드 및 전처리"""
+        try:
+            logger.info(f"데이터 로드 시작 (max_length: {max_length})")
+            
+            # 데이터 로드
+            df = pd.read_csv(self.data_file)
+            
+            if df.empty:
+                raise ValueError("데이터 파일이 비어있습니다.")
+            
+            logger.info(f"데이터 크기: {len(df)}")
+            
+            # 샘플링 제거 (이미 전처리 단계에서 수행됨)
+            
+            # 학습/검증/테스트 분할
+            train_df, temp_df = train_test_split(df, test_size=0.3, random_state=42)
+            val_df, test_df = train_test_split(temp_df, test_size=0.5, random_state=42)
+            
+            # 텍스트 데이터가 'text' 또는 'document' 컬럼에 있는지 확인
+            text_column = 'text' if 'text' in train_df.columns else 'document'
+            
+            # 데이터셋 및 인코딩 생성
+            self.train_encodings = self.tokenizer(
+                train_df[text_column].astype(str).tolist(),
+                truncation=True,
+                padding=True,
+                max_length=max_length,
+                return_tensors="pt"
+            )
+            self.val_encodings = self.tokenizer(
+                val_df[text_column].astype(str).tolist(),
+                truncation=True,
+                padding=True,
+                max_length=max_length,
+                return_tensors="pt"
+            )
+            self.test_encodings = self.tokenizer(
+                test_df[text_column].astype(str).tolist(),
+                truncation=True,
+                padding=True,
+                max_length=max_length,
+                return_tensors="pt"
+            )
+            
+            # 데이터셋 생성
+            self.train_dataset = SentimentDataset(self.train_encodings, train_df['label'].values)
+            self.val_dataset = SentimentDataset(self.val_encodings, val_df['label'].values)
+            self.test_dataset = SentimentDataset(self.test_encodings, test_df['label'].values)
+            
+            # 원본 데이터프레임도 저장
+            self.train_df = train_df
+            self.val_df = val_df
+            self.test_df = test_df
+            
+            # DataLoader 설정
+            self.setup_dataloaders()
+            
+            # 데이터셋 통계 로깅
+            logger.info(f"데이터 로드 완료:")
+            logger.info(f"- 학습 데이터: {len(self.train_dataset)} 샘플")
+            logger.info(f"- 검증 데이터: {len(self.val_dataset)} 샘플")
+            logger.info(f"- 테스트 데이터: {len(self.test_dataset)} 샘플")
+            
+        except Exception as e:
+            logger.error(f"데이터 로드 중 오류 발생: {str(e)}")
+            raise
+
+    def compute_metrics(self, eval_pred):
+        """평가 메트릭 계산"""
+        try:
+            logits, labels = eval_pred
+            predictions = np.argmax(logits, axis=-1)
+            
+            # 기본 메트릭 계산 (prefix 없이)
+            metrics = {
+                'accuracy': accuracy_score(labels, predictions),
+                'f1': f1_score(labels, predictions, average='binary'),
+                'precision': precision_score(labels, predictions, average='binary'),
+                'recall': recall_score(labels, predictions, average='binary')
+            }
+            
+            # MLflow 로깅을 위한 별도의 메트릭 딕셔너리 생성
+            if self.mlflow_logger is not None:
+                eval_metrics = {f'eval_{k}': v for k, v in metrics.items()}
+                self.mlflow_logger.log_metrics(eval_metrics)
+            
+            # prefix 없는 원래 메트릭 반환
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"메트릭 계산 중 오류 발생: {str(e)}")
+            # 기���값도 prefix ��이 반환
+            return {
+                'accuracy': 0.0,
+                'f1': 0.0,
+                'precision': 0.0,
+                'recall': 0.0
+            }
 
     def freeze_layers(self, num_unfrozen_layers: int = 2):
         """
@@ -150,7 +432,7 @@ class BaseSentimentModel(ABC):
         print(f"\n=== 레이어 고정 상태 ===")
         print(f"전체 레이어 수: {total_layers}")
         print(f"고정된 레이어 수: {num_layers_to_freeze}")
-        print(f"학습에 사용될 레이어 수: {num_unfrozen_layers}")
+        print(f"학습에 사용될 이어 수: {num_unfrozen_layers}")
         
         # Count and print trainable parameters
         total_params = sum(p.numel() for p in self.model.parameters())
@@ -163,42 +445,48 @@ class BaseSentimentModel(ABC):
         print(f"고정된 파라미터: {frozen_params:,} ({frozen_params/total_params*100:.2f}%)")
 
     def predict_samples(self, num_samples: int = 5):
-        """
-        Predict sentiment for random samples and show results
-        Args:
-            num_samples (int): Number of samples to show
-        """
-        print("\n=== 예측 결과 샘플 ===")
-        
-        # Get random samples
-        sample_indices = np.random.choice(len(self.val_encodings['input_ids']), num_samples)
-        
-        for idx in sample_indices:
-            # Get original text
-            text = self.data['sentence'].iloc[idx]
-            true_label = self.val_labels.iloc[idx]
+        """무작위 샘플에 대한 예측 수행"""
+        try:
+            if not hasattr(self, 'val_df') or self.val_df is None:
+                logger.error("검증 데이터가 로드되지 않았습니다.")
+                return
             
-            # Prepare input
-            inputs = {
-                key: torch.tensor([self.val_encodings[key][idx]]).to(self.model.device)
-                for key in self.val_encodings
-            }
+            # 무작위 샘플 선택
+            sample_indices = np.random.choice(len(self.val_df), num_samples)
             
-            # Get prediction
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                pred_label = outputs.logits.argmax(dim=-1).item()
-            
-            # Get prediction probability
-            probs = torch.nn.functional.softmax(outputs.logits, dim=-1)
-            confidence = probs[0][pred_label].item()
-            
-            # Print results
-            print("\n---")
-            print(f"텍스트: {text[:100]}...")  # Show first 100 chars
-            print(f"실제 감성: {'긍정' if true_label == 1 else '부정'}")
-            print(f"예측 감성: {'긍정' if pred_label == 1 else '부정'} (확률: {confidence:.2%})")
-            print(f"예측 결과: {'✓' if pred_label == true_label else '✗'}")
+            logger.info("\n=== 샘플 예측 결과 ===")
+            for idx in sample_indices:
+                # 텍스트와 실제 레이블 가져오기
+                text = self.val_df['text'].iloc[idx]  # 'sentence' 대신 'text' 사용
+                true_label = self.val_df['label'].iloc[idx]
+                
+                # 예측 수행
+                inputs = self.tokenizer(
+                    text,
+                    truncation=True,
+                    padding=True,
+                    max_length=256,
+                    return_tensors="pt"
+                ).to(self.device)
+                
+                self.model.eval()
+                with torch.no_grad():
+                    outputs = self.model(**inputs)
+                    logits = outputs.logits
+                    probs = torch.softmax(logits, dim=1)
+                    pred_label = torch.argmax(probs, dim=1).item()
+                    confidence = probs[0][pred_label].item()
+                
+                # 결과 출력
+                sentiment = "긍정" if pred_label == 1 else "부정"
+                true_sentiment = "긍정" if true_label == 1 else "부정"
+                
+                logger.info(f"\n텍스트: {text}")
+                logger.info(f"실제 감성: {true_sentiment}")
+                logger.info(f"예측 감성: {sentiment} (확률: {confidence:.2%})")
+                
+        except Exception as e:
+            logger.error(f"샘플 예측 중 오류 발생: {str(e)}")
 
     def train(self, train_args: dict = None, num_unfrozen_layers: int = 2):
         """
@@ -210,8 +498,12 @@ class BaseSentimentModel(ABC):
         if train_args is None:
             train_args = {}
         
-        self.load_data()
-        self.prepare_data()
+        # 데이터 로드 및 준비
+        sampling_rate = train_args.get('sampling_rate', 1.0)
+        max_length = train_args.get('max_length', 256)
+        
+        self.load_data(sampling_rate=sampling_rate, max_length=max_length)
+        # prepare_data는 이제 필요 없음 (load_data에서 모든 처리를 수행)
         
         # Freeze layers before training
         self.freeze_layers(num_unfrozen_layers=num_unfrozen_layers)
@@ -256,87 +548,89 @@ class BaseSentimentModel(ABC):
         # After training, show some prediction samples
         self.predict_samples(num_samples=5)
 
-    def evaluate(self, normalize_cm: bool = True):
-        eval_result = self.trainer.evaluate()
-        print(f"모델 평가 결과: {eval_result}")
-        
-        # Confusion matrix 생성 및 저장
-        self.save_confusion_matrix(normalize=normalize_cm)
-        
-        return eval_result
-
-    def save_model(self, save_path: Path = None):
-        """
-        Save the model to the specified path
-        Args:
-            save_path (Path, optional): Path to save the model. If None, uses self.model_dir
-        """
-        if save_path is None:
-            save_path = self.model_dir
-        
-        self.model.save_pretrained(save_path)
-        self.tokenizer.save_pretrained(save_path)
-        print(f"모델을 {save_path}에 저장했습니다.")
-
-
-    def save_confusion_matrix(self, normalize: bool = False):
-        """Confusion matrix 생성 및 저장"""
-        print("\n=== Confusion Matrix 생성 ===")
-        
-        # Matplotlib 백엔드를 Agg로 설정 (GUI 없이 동작)
-        import matplotlib
-        matplotlib.use('Agg')
-        
-        # 예측 및 실제 레이블 가져오기
-        preds = self.trainer.predict(self.val_dataset).predictions.argmax(-1)
-        true_labels = self.val_labels
-        
-        # Confusion matrix 계산
-        cm = confusion_matrix(true_labels, preds, normalize='true' if normalize else None)
-        
-        # 시각화
-        plt.figure(figsize=(8, 6))
-        sns.heatmap(
-            cm, 
-            annot=True, 
-            fmt='.2%' if normalize else 'd', 
-            cmap='Blues', 
-            xticklabels=['Negative', 'Positive'], 
-            yticklabels=['Negative', 'Positive']
-        )
-        plt.xlabel('Predicted Label')
-        plt.ylabel('True Label')
-        plt.title('Confusion Matrix' + (' (Normalized)' if normalize else ''))
-        
-        # 저장
-        cm_file = os.path.join(self.model_dir, f'confusion_matrix{"_normalized" if normalize else ""}.png')
-        plt.savefig(cm_file)
-        plt.close()
-        
-        print(f"Confusion matrix를 {cm_file}에 저장했습니다.")
-
-    def load_model(self):
-        """
-        Load the pretrained model from cache or download if not exists
-        """
+    def evaluate(self) -> Dict[str, float]:
+        """모델 평가 수행"""
         try:
-            # 먼저 로컬 pretrained 디렉토리에서 로드 시도
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                self.pretrained_model_dir,
-                num_labels=2
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(self.pretrained_model_dir)
-            print(f"Loaded model from {self.pretrained_model_dir}")
-        except:
-            # 로컬에 없으면 다운로드 후 저장
-            print(f"Downloading model {self.pretrained_model_name}")
-            self.model = AutoModelForSequenceClassification.from_pretrained(
-                self.pretrained_model_name,
-                num_labels=2
-            )
-            self.tokenizer = AutoTokenizer.from_pretrained(self.pretrained_model_name)
+            # 평가 수행
+            eval_results = self.trainer.evaluate()
             
-            # pretrained 모델 저장
-            self.model.save_pretrained(self.pretrained_model_dir)
-            self.tokenizer.save_pretrained(self.pretrained_model_dir)
-            print(f"Saved pretrained model to {self.pretrained_model_dir}")
+            # 예측값 얻기
+            predictions = self.trainer.predict(self.val_dataset)
+            y_pred = np.argmax(predictions.predictions, axis=-1)
+            y_true = predictions.label_ids
+            
+            # 메트릭스 계산
+            metrics = {
+                'accuracy': accuracy_score(y_true, y_pred),
+                'f1': f1_score(y_true, y_pred, average='binary'),
+                'precision': precision_score(y_true, y_pred, average='binary'),
+                'recall': recall_score(y_true, y_pred, average='binary')
+            }
+            
+            # Confusion Matrix 저장 디렉토리 설정
+            confusion_matrix_dir = Path("confusion_matrices")
+            confusion_matrix_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 기본 Confusion Matrix 생성 및 저장
+            plt.figure(figsize=(8, 6))
+            cm = confusion_matrix(y_true, y_pred)
+            sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+            plt.title('Confusion Matrix')
+            plt.ylabel('True Label')
+            plt.xlabel('Predicted Label')
+            plt.savefig(confusion_matrix_dir / "confusion_matrix.png")
+            plt.close()
+            
+            # 정규화된 Confusion Matrix 생성 및 저장
+            plt.figure(figsize=(8, 6))
+            cm_normalized = cm.astype('float') / cm.sum(axis=1)[:, np.newaxis]
+            sns.heatmap(cm_normalized, annot=True, fmt='.2f', cmap='Blues')
+            plt.title('Normalized Confusion Matrix')
+            plt.ylabel('True Label')
+            plt.xlabel('Predicted Label')
+            plt.savefig(confusion_matrix_dir / "confusion_matrix_normalized.png")
+            plt.close()
+            
+            # MLflow에 아티팩트 로깅
+            if self.mlflow_logger is not None:
+                self.mlflow_logger.log_metrics(metrics)
+                mlflow.log_artifacts(str(confusion_matrix_dir), "confusion_matrices")
+                logger.info(f"Confusion Matrix 이미지가 저장되었습니다: {confusion_matrix_dir}")
+            
+            return metrics
+            
+        except Exception as e:
+            logger.error(f"평가 중 오류 발생: {str(e)}")
+            logger.error(f"예측 결과: {predictions if 'predictions' in locals() else 'Not available'}")
+            return {
+                'accuracy': 0.0,
+                'f1': 0.0,
+                'precision': 0.0,
+                'recall': 0.0
+            }
+
+    def setup_dataloaders(self):
+        """DataLoader 설정"""
+        if self.train_dataset is not None:
+            self.train_dataloader = DataLoader(
+                self.train_dataset, 
+                batch_size=self.batch_size, 
+                shuffle=True
+            )
+        if self.val_dataset is not None:
+            self.val_dataloader = DataLoader(
+                self.val_dataset, 
+                batch_size=self.batch_size, 
+                shuffle=False
+            )
+        if self.test_dataset is not None:
+            self.test_dataloader = DataLoader(
+                self.test_dataset, 
+                batch_size=self.batch_size, 
+                shuffle=False
+            )
+
+    @abstractmethod
+    def predict(self, dataset):
+        """예측 수행"""
+        pass

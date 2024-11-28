@@ -3,16 +3,13 @@ from models.model_factory import ModelFactory
 from utils.data_preprocessor import DataPreprocessor
 from models.model_registry import ModelRegistry
 from datetime import datetime
-<<<<<<< HEAD
 from transformers import TrainingArguments, Trainer
 import pandas as pd
 from typing import Dict, Tuple, Optional
 import logging
-from utils.mlflow_utils import MLflowLogger, MLflowConfig
-=======
-from pytorch_lightning import Trainer
-import torch
->>>>>>> c65065e06dc6f892a3bf2f47965983ee8213ee05
+from utils.mlflow_utils import MLflowLogger
+import mlflow
+from config import config
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +20,6 @@ class ModelEvaluator:
         self.mlflow_logger = mlflow_logger
         self.registry = ModelRegistry(metric_threshold={'eval_f1': 0.3})
     
-<<<<<<< HEAD
     def evaluate_model(self, 
                       model_name: str, 
                       pretrained_model_name: str, 
@@ -47,71 +43,6 @@ class ModelEvaluator:
             model_dir=pretrained_model_dir,
             pretrained_model_name=pretrained_model_name,
             pretrained_model_dir=pretrained_model_dir
-=======
-    # 모델 디렉토리 설정
-    models_dir = Path(__file__).parent.parent / 'models'
-    pretrained_model_dir = models_dir / 'pretrained' / model_name
-    
-    # 모델 생성
-    factory = ModelFactory()
-    model = factory.get_model(
-        model_name=model_name,
-        data_file=data_file,
-        model_dir=pretrained_model_dir,
-        pretrained_model_name=pretrained_model_name,
-        pretrained_model_dir=pretrained_model_dir
-    )
-    
-    # Trainer 설정
-    trainer = Trainer(
-        accelerator='gpu' if torch.cuda.is_available() else 'cpu',
-        devices=1,
-        enable_progress_bar=True,
-        enable_model_summary=True,
-    )
-    
-    # MLflow 실행 시작
-    timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    with mlflow.start_run(run_name=f"{model_name}_evaluation_{timestamp}") as run:
-        # 모델 평가
-        metrics = trainer.validate(model)[0]  # validate() 메서드 사용
-        
-        # 메트릭 로깅
-        mlflow.log_metrics({
-            'eval_loss': metrics['val_loss'],
-            'eval_accuracy': metrics['val_acc'],
-            'eval_precision': metrics['val_precision'],
-            'eval_recall': metrics['val_recall'],
-            'eval_f1': metrics['val_f1']
-        })
-        
-        # 모델 정보 로깅
-        mlflow.log_params({
-            'model_name': model_name,
-            'pretrained_model': pretrained_model_name,
-            'dataset': data_file.stem
-        })
-        
-        print("\n=== 평가 결과 ===")
-        for metric_name, value in metrics.items():
-            print(f"{metric_name}: {value:.4f}")
-
-         # 데이터셋 정보 로깅
-        train_df = model.train_dataset.to_pandas()
-        val_df = model.val_dataset.to_pandas()
-        log_dataset(train_df, "train")
-        log_dataset(val_df, "val")
-        
-        mlflow.log_input(
-            dataset=mlflow.data.from_pandas(train_df),
-            context="training",
-            tags={"format": "pandas", "dataset_name": data_file.stem}
-        )
-        mlflow.log_input(
-            dataset=mlflow.data.from_pandas(val_df),
-            context="validation",
-            tags={"format": "pandas", "dataset_name": data_file.stem}
->>>>>>> c65065e06dc6f892a3bf2f47965983ee8213ee05
         )
         
         # 데이터 로드 및 준비
@@ -125,7 +56,6 @@ class ModelEvaluator:
             evaluation_strategy="epoch"
         )
         
-<<<<<<< HEAD
         model.trainer = Trainer(
             model=model.model,
             args=training_args,
@@ -133,8 +63,8 @@ class ModelEvaluator:
             compute_metrics=model.compute_metrics
         )
         
-        # MLflow 실행 시작
-        run_name = self.mlflow_logger.generate_run_name(model_name, "evaluation")
+        # MLflow 실행 이름 생성 - 단순화
+        run_name = f"{model_name}_eval_{datetime.now().strftime('%Y%m%d')}"
         
         with self.mlflow_logger.start_run(run_name=run_name) as run:
             # 모델 평가
@@ -208,43 +138,38 @@ class ModelEvaluator:
             )
             
             # 모델 레지스트리에 등록
-            self.registry.evaluate_and_register(run.info.run_id, model_name)
+            self.registry.add_model(
+                model_name=model_name,
+                run_id=run.info.run_id,
+                metrics=metrics,
+                dataset_name=dataset_name,
+                sampling_rate=sampling_rate,
+                threshold=config.model['register_threshold']
+            )
             
             logger.info("\n=== 평가 결과 ===")
             for metric_name, value in metrics.items():
                 logger.info(f"{metric_name}: {value:.4f}")
             
             return run.info.run_id, metrics
-=======
-        # 모델 레지스트리에 등록 (필요한 경우)
-        registry = ModelRegistry(metric_threshold={'eval_f1': 0.65})
-        registry.evaluate_and_register(run.info.run_id, model_name)
-        
-        
-        return run.info.run_id, metrics
-def log_dataset(df, artifact_path):
-    # 데이터셋 메타데이터 생성
-    metadata = {
-        "columns": list(df.columns),
-        "null_values": df.isnull().sum().to_dict(),
-        "description": "Naver Movie Review Dataset. Train",
-        "row_count": len(df),
-    }
->>>>>>> c65065e06dc6f892a3bf2f47965983ee8213ee05
 
-    # MLflow에 메타데이터 로깅
-    mlflow.log_dict(metadata, f"{artifact_path}_metadata.json")
-    mlflow.log_artifact(f"{artifact_path}.csv", artifact_path=f"{artifact_path}_datasets")
+    # # MLflow에 메타데이터 로깅
+    # mlflow.log_dict(metadata, f"{artifact_path}_metadata.json")
+    # mlflow.log_artifact(f"{artifact_path}.csv", artifact_path=f"{artifact_path}_datasets")
     
 def main():
+    file_path = Path(__file__)
+    file_name = file_path.stem
+    config.mlflow['experiment_name'] = config.mlflow['experiment_name'] + '_' + file_name
+    print(f'Experiment name: {config.mlflow["experiment_name"]}')
+    
     # MLflow 설정
-    mlflow_config = MLflowConfig(experiment_name="model_evaluation")
-    mlflow_logger = MLflowLogger(mlflow_config)
+    mlflow_logger = MLflowLogger()
     evaluator = ModelEvaluator(mlflow_logger)
     
     # 데이터 준비
-    dataset_name = "naver_movie_review"
-    sampling_rate = 0.001
+    dataset_name = config.dataset['name']
+    sampling_rate = config.dataset['sampling_rate']
     data_dir = Path(__file__).parent.parent / 'data'
     data_prep = DataPreprocessor(data_dir=data_dir)
     
@@ -269,14 +194,9 @@ def main():
         run_id, metrics = evaluator.evaluate_model(
             model_name=model_name,
             pretrained_model_name=pretrained_model_name,
-<<<<<<< HEAD
             dataset_name=dataset_name,
             data_file=preped_file_path,
             sampling_rate=sampling_rate
-=======
-            data_file=preped_file_path,
-            experiment_name=experiment_name
->>>>>>> c65065e06dc6f892a3bf2f47965983ee8213ee05
         )
         results[model_name] = {'run_id': run_id, 'metrics': metrics}
     
