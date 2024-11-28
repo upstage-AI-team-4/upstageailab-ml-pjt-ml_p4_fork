@@ -1,0 +1,38 @@
+# Data Configuration
+data:
+  name: 'naver_movie_review'
+  sampling_rate: 1.0
+  max_length: 128
+
+# Model Configuration
+model:
+  register_threshold: 0.5
+  num_unfrozen_layers: 10
+  models:
+    KcBERT: 'beomi/kcbert-base'
+
+
+# Training Configuration
+train:
+  learning_rate: 2.0e-5
+  num_train_epochs: 10
+  batch_size: 32
+  early_stopping_patience: 3
+
+# Hyperparameter Search
+optuna:
+  n_trials: 30
+  timeout: 3600
+  optimizer: 'tpe'
+  search_space:
+    learning_rate: [1.0e-5, 1.0e-4]
+    batch_size: [16, 32]
+    num_unfrozen_layers: [1, 10, 20]
+
+# MLflow Configuration
+mlflow:
+  tracking_uri: "http://127.0.0.1:5000"
+  experiment_name: "ml4_pjt"
+  artifact_location: "/data/ephemeral/home/upstageailab-ml-pjt-ml_p4/mlruns"
+  registry_uri: "file:///data/ephemeral/home/upstageailab-ml-pjt-ml_p4/mlruns"
+  log_model_format: "pytorch"
