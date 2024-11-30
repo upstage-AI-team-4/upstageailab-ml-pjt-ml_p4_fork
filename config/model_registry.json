@@ -1,0 +1,28 @@
+[
+  {
+    "experiment_name": "ml4_sentiment_analysis",
+    "experiment_id": "443102820901290818",
+    "run_id": "cf94b09afa914115ac0c2f3e1dfc6a87",
+    "run_name": "KcBERT_nsmc",
+    "metrics": {
+      "val_accuracy": 0.4931800067424774,
+      "val_precision": 0.4931800067424774,
+      "val_recall": 0.4931800067424774,
+      "val_f1": 0.4931800067424774
+    },
+    "params": {
+      "model_name": "KcBERT",
+      "pretrained_model": "beomi/kcbert-base",
+      "batch_size": 16,
+      "learning_rate": 5e-06,
+      "num_epochs": 20,
+      "max_length": 150,
+      "optimizer": "AdamW",
+      "lr_scheduler": "exp",
+      "num_unfreeze_layers": 3,
+      "precision": 16
+    },
+    "stage": "production",
+    "timestamp": "20241130_134509"
+  }
+]
