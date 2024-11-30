@@ -38,18 +38,18 @@ models:
 # 학습 설정
 trainings:
   base:
+    epochs: 2
     num_labels: 2
     random_seed: 42
     pretrained_model: 'beomi/kcbert-base'
     batch_size: 16
     lr: 5.0e-6
-    epochs: 20
     max_length: 150
     report_cycle: 100
     optimizer: 'AdamW'
     lr_scheduler: 'exp'
     precision: 16
-    num_unfreeze_layers: 3
+    num_unfreeze_layers: -1
     
     # Trainer 설정
     trainer:
@@ -57,7 +57,7 @@ trainings:
       devices: 1
       deterministic: true
       enable_progress_bar: true
-      log_every_n_steps: 10
+      log_every_n_steps: 100
       num_sanity_val_steps: 0
       default_root_dir: "logs/lightning_logs"
       
@@ -67,7 +67,7 @@ trainings:
       filename: "{epoch}-{val_accuracy:.4f}"
       monitor: "val_accuracy"
       mode: "max"
-      save_top_k: 1
+      save_top_k: 0
       save_last: false
       every_n_epochs: 1
     
