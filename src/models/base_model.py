@@ -47,13 +47,16 @@ class BaseTextClassifier(BaseModel):
     
     def _shared_step(self, batch: Tuple, split: str) -> Tuple[torch.Tensor, Dict[str, float]]:
         """Shared step for training and validation."""
-        data, labels = batch
-        loss = self._compute_loss(batch)
+        outputs = self(
+            input_ids=batch['input_ids'],
+            attention_mask=batch['attention_mask'],
+            labels=batch['labels']
+        )
+        loss = outputs.loss
         
         with torch.no_grad():
-            outputs = self(input_ids=data)
             preds = outputs.logits.argmax(dim=-1)
-            metrics = self._compute_metrics(labels, preds)
+            metrics = self._compute_metrics(batch['labels'], preds)
             metrics['loss'] = loss.item()
             
         return loss, metrics

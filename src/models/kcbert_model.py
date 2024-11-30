@@ -112,8 +112,11 @@ class KcBERT(BaseTextClassifier):
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'step',  # or 'epoch'
-                'frequency': 1
+                'interval': 'step',
+                'frequency': 1,
+                'monitor': 'val_loss',
+                'strict': True,
+                'name': None,
             }
         }
     
@@ -132,7 +135,7 @@ class KcBERT(BaseTextClassifier):
             for param in self.model.parameters():
                 param.requires_grad = True
         elif self.num_unfreeze_layers > 0:
-            # ���정된 수의 인코더 레이어만 학습
+            # 정된 수의 인코더 레이어만 학습
             # BERT는 일반적으로 12개의 레이어를 가짐
             total_layers = len(self.model.bert.encoder.layer)
             for i in range(total_layers - self.num_unfreeze_layers, total_layers):
@@ -158,30 +161,47 @@ class KcBERT(BaseTextClassifier):
         """Get optimizer with different learning rates for different layers"""
         no_decay = ['bias', 'LayerNorm.weight']
         
-        # 파라미터 그룹화
+        # classifier 파라미터를 제외한 파라미터들을 그룹화
         optimizer_grouped_parameters = [
             {
                 'params': [p for n, p in self.model.named_parameters() 
-                          if not any(nd in n for nd in no_decay) and p.requires_grad],
-                'weight_decay': 0.01
+                          if not any(nd in n for nd in no_decay) 
+                          and p.requires_grad
+                          and 'classifier' not in n],  # classifier 제외
+                'weight_decay': 0.01,
+                'lr': self.learning_rate
             },
             {
                 'params': [p for n, p in self.model.named_parameters() 
-                          if any(nd in n for nd in no_decay) and p.requires_grad],
-                'weight_decay': 0.0
+                          if any(nd in n for nd in no_decay) 
+                          and p.requires_grad
+                          and 'classifier' not in n],  # classifier 제외
+                'weight_decay': 0.0,
+                'lr': self.learning_rate
+            },
+            {
+                'params': [p for n, p in self.model.classifier.named_parameters() 
+                          if p.requires_grad],  # classifier만 따로
+                'weight_decay': 0.01,
+                'lr': self.learning_rate * 5  # classifier는 더 높은 학습률
             }
         ]
         
         if self.optimizer_type == 'AdamW':
-            return AdamW(optimizer_grouped_parameters, lr=self.learning_rate)
+            return AdamW(optimizer_grouped_parameters)
         raise ValueError(f"Unsupported optimizer: {self.optimizer_type}")
     
     def _get_scheduler(self, optimizer):
         """Get learning rate scheduler based on configuration"""
         if self.scheduler_type == 'cos':
-            return CosineAnnealingWarmRestarts(optimizer, T_0=1, T_mult=2)
+            return CosineAnnealingWarmRestarts(
+                optimizer, 
+                T_0=1000,  # 더 긴 주기
+                T_mult=2,
+                eta_min=1e-6  # 최소 학습률 설정
+            )
         elif self.scheduler_type == 'exp':
-            return ExponentialLR(optimizer, gamma=0.5)
+            return ExponentialLR(optimizer, gamma=0.95)  # 감소율 조정
         raise ValueError(f"Unsupported scheduler: {self.scheduler_type}")
     
     def training_step(self, batch, batch_idx):

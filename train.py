@@ -44,8 +44,58 @@ def cleanup_artifacts(config, metrics, run_id):
         if artifact_path.exists():
             shutil.rmtree(artifact_path)
 
+def print_prediction_samples(model, data_module, tokenizer, n_samples=5):
+    """샘플 예측 결과 출력"""
+    print("\n=== Sample Predictions ===")
+    print(f"Showing {n_samples} random samples from validation set")
+    print("-" * 80)
+    
+    # 검증 데이터셋에서 랜덤 샘플 선택
+    val_dataset = data_module.val_dataset
+    indices = torch.randperm(len(val_dataset))[:n_samples]
+    
+    model.eval()
+    with torch.no_grad():
+        for idx in indices:
+            # 원본 텍스트와 레이블 가져오기
+            original_text = val_dataset.documents[idx]
+            true_label = val_dataset.labels[idx]
+            
+            # 모델 입력 준비
+            inputs = val_dataset[idx]
+            input_ids = inputs['input_ids'].unsqueeze(0)
+            attention_mask = inputs['attention_mask'].unsqueeze(0)
+            
+            # GPU 사용 중이면 텐서를 GPU로 이동
+            if next(model.parameters()).is_cuda:
+                input_ids = input_ids.cuda()
+                attention_mask = attention_mask.cuda()
+            
+            # 예측
+            outputs = model(input_ids=input_ids, attention_mask=attention_mask)
+            logits = outputs.logits
+            probs = torch.softmax(logits, dim=-1)
+            pred_label = torch.argmax(logits, dim=-1).item()
+            confidence = probs[0][pred_label].item()
+            
+            # 결과 출력
+            print(f"Original Text: {original_text}")
+            print(f"True Label: {true_label}")
+            print(f"Predicted Label: {pred_label}")
+            print(f"Confidence: {confidence:.4f}")
+            print(f"Correct: {'✓' if pred_label == true_label else '✗'}")
+            print("-" * 80)
+
 def train(config):
     # MLflow 설정
+    print("=" * 50)
+    print("\n=== Training Configuration ===")
+    print(f"Pretrained Model: {config.base_training.pretrained_model}")
+    print(f"Batch Size: {config.base_training.batch_size}")
+    print(f"Learning Rate: {config.base_training.lr}")
+    print(f"Epochs: {config.base_training.epochs}")
+    print(f"Max Length: {config.base_training.max_length}")
+    print("=" * 50 + "\n")
     mlflow.set_tracking_uri(config.mlflow.tracking_uri)
     
     # 실험 설정
@@ -97,84 +147,72 @@ def train(config):
         trainer = Trainer(**config.get_trainer_kwargs())
         trainer.fit(model, data_module)
         
-        # 검증 성능 평가
-        val_results = trainer.validate(model, datamodule=data_module)[0]
+        # 평가기 초기화
+        evaluator = ModelEvaluator(model, tokenizer)
         
-        # 예측값과 실제값 수집 (confusion matrix 용)
-        val_predictions = []
-        val_labels = []
-        for batch in data_module.val_dataloader():
-            with torch.no_grad():
+        # 한 번에 모든 평가 수행
+        eval_metrics = evaluator.evaluate_dataset(data_module)
+        
+        # 결과 출력
+        print("\n=== Evaluation Results ===")
+        print(f"Accuracy: {eval_metrics['accuracy']:.4f}")
+        print(f"Average Confidence: {eval_metrics['avg_confidence']:.4f}")
+        
+        # 신뢰도 구간별 정확도 출력
+        print("\n=== Accuracy by Confidence Level ===")
+        for bin_name, bin_data in eval_metrics['confidence_bins'].items():
+            print(f"{bin_name}: {bin_data['accuracy']:.4f} ({bin_data['count']} samples)")
+        
+        # 샘플 예측 결과 출력
+        print("\n=== Sample Predictions ===")
+        for sample in eval_metrics['sample_predictions']:
+            print(f"Text: {sample['text']}")
+            print(f"True Label: {sample['true_label']}")
+            print(f"Predicted: {sample['predicted_label']} (confidence: {sample['confidence']:.4f})")
+            print(f"Correct: {'✓' if sample['correct'] else '✗'}")
+            print("-" * 80)
+        
+        # MLflow에 메트릭 로깅
+        mlflow.log_metrics({
+            "val_accuracy": eval_metrics['accuracy'],
+            "val_avg_confidence": eval_metrics['avg_confidence']
+        })
+        
+        # Confusion matrix 수정
+        from sklearn.metrics import confusion_matrix
+        import seaborn as sns
+        import matplotlib.pyplot as plt
+        
+        # 전체 validation 데이터에 대한 예측 수집
+        all_preds = []
+        all_labels = []
+        model.eval()
+        with torch.no_grad():
+            for batch in data_module.val_dataloader():
+                batch = {k: v.to(model.device) for k, v in batch.items()}
                 outputs = model(**{k: v for k, v in batch.items() if k != 'labels'})
-                predictions = torch.argmax(outputs.logits, dim=-1)
-                val_predictions.extend(predictions.cpu().numpy())
-                val_labels.extend(batch['labels'].cpu().numpy())
+                preds = torch.argmax(outputs.logits, dim=-1)
+                all_preds.extend(preds.cpu().numpy())
+                all_labels.extend(batch['labels'].cpu().numpy())
         
-        # Confusion matrix 생성 및 MLflow에 로깅
-        cm_path = plot_confusion_matrix(val_labels, val_predictions)
+        # Confusion Matrix 생성 및 저장
+        cm = confusion_matrix(all_labels, all_preds)
+        plt.figure(figsize=(8, 6))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        
+        # 임시 파일로 저장
+        cm_path = 'confusion_matrix.png'
+        plt.savefig(cm_path)
+        plt.close()
+        
+        # MLflow에 로깅
         mlflow.log_artifact(cm_path, "confusion_matrix")
         os.remove(cm_path)  # 임시 파일 삭제
         
-        # MLflow에 메트릭 로깅
-        metrics = {
-            "val_accuracy": val_results["val_accuracy"],
-            "val_precision": val_results["val_precision"],
-            "val_recall": val_results["val_recall"],
-            "val_f1": val_results["val_f1"]
-        }
-        mlflow.log_metrics(metrics)
-        
-        # MLflow에 파라미터 로깅
-        params = {
-            "model_name": config.project.model_name,
-            "pretrained_model": config.base_training.pretrained_model,
-            "batch_size": config.base_training.batch_size,
-            "learning_rate": config.base_training.lr,
-            "num_epochs": config.base_training.epochs,
-            "max_length": config.base_training.max_length,
-            "optimizer": config.base_training.optimizer,
-            "lr_scheduler": config.base_training.lr_scheduler,
-            "num_unfreeze_layers": config.base_training.num_unfreeze_layers,
-            "precision": config.base_training.precision
-        }
-        mlflow.log_params(params)
-        
-        # threshold를 넘는 모델만 아티팩트로 저장
-        if metrics["val_accuracy"] > config.mlflow.model_registry_metric_threshold:
-            # 모델 아티팩트 저장
-            artifact_uri = mlflow.get_artifact_uri()
-            artifact_path = get_local_path_from_uri(artifact_uri) / "model"
-            os.makedirs(artifact_path, exist_ok=True)
-            
-            # 모델 저장
-            torch.save(model.state_dict(), artifact_path / "model.pt")
-            
-            # 설정 저장
-            config_dict = {
-                "model_type": type(model).__name__,
-                "pretrained_model": config.base_training.pretrained_model,
-                "num_labels": config.base_training.num_labels,
-                "max_length": config.base_training.max_length
-            }
-            with open(artifact_path / "config.json", "w") as f:
-                json.dump(config_dict, f, indent=2)
-            
-            # MLflow에 모델 등록
-            register_path = str(artifact_path).replace('\\', '/')
-            mlflow.register_model(
-                f"file://{register_path}",
-                config.project.model_name
-            )
-            
-            # model_info.json에 저장
-            model_manager = MLflowModelManager(config)
-            model_manager.save_model_info(
-                run_id=run.info.run_id,
-                metrics=metrics,
-                params=params
-            )
-        
-        return run.info.run_id, metrics, run_name
+        return run.info.run_id, eval_metrics, run_name
 
 def main():
     # Config 설정
@@ -185,12 +223,19 @@ def main():
     os.makedirs(log_dir, exist_ok=True)
     
     # MLflow 경로 정보 출력
+    print("=" * 50)
     print("\n=== MLflow Configuration ===")
     print(f"MLflow Tracking URI: {config.mlflow.tracking_uri}")
     print(f"MLflow Run Path: {config.mlflow.mlrun_path}")
     print(f"MLflow Experiment Name: {config.mlflow.experiment_name}")
     print("=" * 50 + "\n")
+    print(f"Model Name: {config.project.model_name}")
+    print(f"Dataset Name: {config.data.dataset_name}")
+    print(f"Sampling Rate: {config.data.sampling_rate}")
+    print(f"Test Size: {config.data.test_size}")
+
     
+
     # 학습 실행
     run_id, metrics, run_name = train(config)
     
@@ -199,7 +244,61 @@ def main():
     print(f"Run ID: {run_id}")
     print("Validation metrics:")
     for metric_name, value in metrics.items():
-        print(f"  {metric_name}: {value:.4f}")
+        if isinstance(value, float):
+            print(f"  {metric_name}: {value:.4f}")
+    
+    # 학습된 모델로 추가 평가
+    print("\n=== Validation Sample Predictions ===")
+    
+    # validation 데이터셋에서 랜덤 샘플 선택
+    val_dataset = data_module.val_dataset
+    n_samples = 10  # 보여줄 샘플 수
+    indices = torch.randperm(len(val_dataset))[:n_samples].tolist()
+    
+    model.eval()
+    with torch.no_grad():
+        for idx in indices:
+            # 원본 텍스트와 레이블 가져오기
+            text = val_dataset.documents[idx]
+            true_label = val_dataset.labels[idx]
+            
+            # 모델 입력 준비
+            sample = val_dataset[idx]
+            inputs = {
+                'input_ids': sample['input_ids'].unsqueeze(0).to(model.device),
+                'attention_mask': sample['attention_mask'].unsqueeze(0).to(model.device)
+            }
+            
+            # 예측
+            outputs = model(**inputs)
+            logits = outputs.logits
+            probs = torch.softmax(logits, dim=-1)
+            pred_label = torch.argmax(logits, dim=-1).item()
+            confidence = probs[0][pred_label].item()
+            
+            # 결과 출력
+            print("\nText:", text)
+            print(f"True Label: {'긍정' if true_label == 1 else '부정'}")
+            print(f"Prediction: {'긍정' if pred_label == 1 else '부정'}")
+            print(f"Confidence: {confidence:.4f}")
+            print(f"Correct: {'O' if pred_label == true_label else 'X'}")
+            print("-" * 80)
+    
+    # 2. 사용자 입력 받아서 실시간 추론
+    print("\n=== Interactive Inference ===")
+    print("Enter your text (or 'q' to quit):")
+    
+    while True:
+        user_input = input("\nText: ").strip()
+        if user_input.lower() == 'q':
+            break
+            
+        if not user_input:
+            continue
+            
+        result = inferencer.predict(user_input)[0]
+        print(f"Prediction: {'긍정' if result['prediction'] == 1 else '부정'}")
+        print(f"Confidence: {result['confidence']:.4f}")
     
     # MLflow 실험 결과 위치 출력
     print("\n=== MLflow Run Information ===")
