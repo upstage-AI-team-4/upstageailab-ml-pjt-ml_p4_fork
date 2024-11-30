@@ -24,6 +24,7 @@ lightning_logs/
 
 .ipynb_checkpoints
 */.ipynb_checkpoints/*
+*.pyc
 
 # IPython
 profile_default/
