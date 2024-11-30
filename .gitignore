@@ -6,6 +6,9 @@ data/
 logs/
 backup/
 
+!/src/models
+!/src/data
+
 mlruns/
 mlartifacts/
 lightning_logs/
