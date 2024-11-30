@@ -2,12 +2,15 @@
 # Edit at https://www.toptal.com/developers/gitignore?templates=python,jupyternotebooks,visualstudiocode,venv,dotenv
 
 models/
-.cursorrules
+data/
+logs/
 backup/
-tmp/
+
 mlruns/
 mlartifacts/
 lightning_logs/
+
+./cursorrules
 
 ### dotenv ###
 .env
