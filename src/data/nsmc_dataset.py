@@ -9,6 +9,7 @@ from transformers import PreTrainedTokenizer
 from pytorch_lightning import LightningDataModule
 from pathlib import Path
 import numpy as np
+import mlflow
 
 def download_nsmc(data_dir: str = 'data/nsmc'):
     """Download NSMC dataset"""
@@ -121,6 +122,7 @@ class NSMCDataModule(LightningDataModule):
         
         # 데이터 파일이 없으면 다운로드
         if not self.train_file.exists() or not self.val_file.exists():
+            print("No dataset files found. Downloading NSMC dataset...")
             download_nsmc(str(self.data_dir))
 
     def setup(self, stage: Optional[str] = None):
@@ -185,3 +187,68 @@ class NSMCDataModule(LightningDataModule):
             shuffle=False,
             num_workers=4
         )
+
+def log_data_info(data_module, config):
+    """Log dataset information to MLflow and print dataset details."""
+    train_path = config.data.train_data_path
+    val_path = config.data.val_data_path
+    print("=" * 50)
+    print(f"Train Path: {train_path}")
+    print(f"Val Path: {val_path}")
+    # Load raw data
+    train_df = pd.read_csv(train_path, sep='\t')
+    val_df = pd.read_csv(val_path, sep='\t')
+    
+    # Print raw data examples and size
+    print("\n=== Raw Data Examples ===")
+    print(train_df.head())
+    print(f"\nTrain Data Size: {len(train_df)}")
+    print(f"Validation Data Size: {len(val_df)}")
+    
+    # Print label distribution in raw data
+    print("\n=== Raw Data Label Distribution ===")
+    print("Train Labels:")
+    print(train_df['label'].value_counts())
+    print("Validation Labels:")
+    print(val_df['label'].value_counts())
+    
+    # Log meta data
+    for name, df in [("train", train_df), ("val", val_df)]:
+        mlflow.log_param(f"{name}_num_rows", len(df))
+        mlflow.log_param(f"{name}_num_columns", len(df.columns))
+        mlflow.log_param(f"{name}_columns", df.columns.tolist())
+        
+        # Log statistics
+        stats = df.describe(include='all').to_dict()
+        mlflow.log_dict(stats, f"{name}_data_statistics.json")
+        
+        # Log NaNs and zeros
+        nans = df.isna().sum().to_dict()
+        zeros = (df == 0).sum().to_dict()
+        mlflow.log_dict(nans, f"{name}_nans.json")
+        mlflow.log_dict(zeros, f"{name}_zeros.json")
+    
+    # Log tokenized data
+    for name, dataset in [("train", data_module.train_dataset), ("val", data_module.val_dataset)]:
+        tokenized_samples = [
+            {
+                'input_ids': sample['input_ids'].tolist(),
+                'attention_mask': sample['attention_mask'].tolist(),
+                'labels': sample['labels'].item()
+            }
+            for sample in [dataset[i] for i in range(min(5, len(dataset)))]
+        ]
+        mlflow.log_dict(tokenized_samples, f"{name}_tokenized_samples.json")
+    
+    # Print actual dataset sizes
+    print(f"\nActual Train Dataset Size: {len(data_module.train_dataset)}")
+    print(f"Actual Validation Dataset Size: {len(data_module.val_dataset)}")
+    
+    # Print label distribution in processed data
+    print("\n=== Processed Data Label Distribution ===")
+    print("Train Labels:")
+    train_labels = [sample['labels'].item() for sample in data_module.train_dataset]
+    print(pd.Series(train_labels).value_counts())
+    print("Validation Labels:")
+    val_labels = [sample['labels'].item() for sample in data_module.val_dataset]
+    print(pd.Series(val_labels).value_counts())

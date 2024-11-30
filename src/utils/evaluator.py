@@ -2,6 +2,7 @@ import torch
 from typing import Dict, List, Tuple
 import numpy as np
 from pathlib import Path
+from sklearn.metrics import f1_score
 
 class ModelEvaluator:
     def __init__(self, model, tokenizer, device='cuda' if torch.cuda.is_available() else 'cpu'):
@@ -21,6 +22,9 @@ class ModelEvaluator:
         # 기본 메트릭 계산
         metrics['accuracy'] = self._calculate_accuracy(predictions, labels)
         metrics['avg_confidence'] = np.mean(confidences)
+        
+        # F1 스코어 계산
+        metrics['f1'] = f1_score(labels, predictions, average='weighted')
         
         # 신뢰도 구간별 정확도
         confidence_metrics = self._calculate_confidence_bins(predictions, labels, confidences)

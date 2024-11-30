@@ -8,6 +8,7 @@ from pathlib import Path
 from tabulate import tabulate
 import pandas as pd
 from datetime import datetime
+import shutil
 
 def cleanup_old_runs(config, days_to_keep=7):
     """오래된 실험 결과 정리"""
@@ -21,8 +22,20 @@ def cleanup_old_runs(config, days_to_keep=7):
             run_date = datetime.fromtimestamp(run.info.start_time / 1000.0)
             if run_date < cutoff_date:
                 # threshold를 넘지 못한 오래된 실험은 삭제
-                if run.data.metrics.get("val_accuracy", 0) <= config.mlflow.model_registry_metric_threshold:
+                if run.data.metrics.get("val_f1", 0) <= config.mlflow.model_registry_metric_threshold:
                     client.delete_run(run.info.run_id) 
+
+def cleanup_artifacts(config, metrics, run_id):
+    """체크포인트와 아티팩트 정리"""
+    checkpoint_dir = config.base_path / config.base_training.checkpoint['dirpath']
+    if checkpoint_dir.exists():
+        shutil.rmtree(checkpoint_dir)
+    
+    if metrics["val_f1"] <= config.mlflow.model_registry_metric_threshold:
+        artifact_path = config.mlflow.mlrun_path / run_id / "artifacts"
+        if artifact_path.exists():
+            shutil.rmtree(artifact_path)
+
 class ModelStage(Enum):
     """MLflow 모델 스테이지 정의"""
     STAGING = 'staging'
@@ -41,10 +54,8 @@ class MLflowModelManager:
         self.config = config
         self.client = MlflowClient()
         self.model_info_path = config.mlflow.model_info_path
-    def register_model(self, 
-                      model_name: str, 
-                      run_id: str, 
-                      model_uri: str = 'model') -> ModelVersion:
+
+    def register_model(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
         """MLflow에 모델을 등록하고 버전 정보를 반환"""
         model_uri = f"runs:/{run_id}/{model_uri}"
         model_version = mlflow.register_model(model_uri, model_name)
@@ -55,10 +66,7 @@ class MLflowModelManager:
             stage=ModelStage.STAGING
         )
     
-    def promote_to_staging(self, 
-                         model_name: str, 
-                         run_id: str, 
-                         model_uri: str = 'model') -> ModelVersion:
+    def promote_to_staging(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
         """모델을 Staging 단계로 승격"""
         model_version = self.register_model(model_name, run_id, model_uri)
         
@@ -96,8 +104,7 @@ class MLflowModelManager:
         """특정 스테이지의 최신 모델 버전들을 조회"""
         return self.client.get_latest_versions(model_name, stages)
     
-    def save_model_info(self, run_id: str, metrics: Dict[str, float],
-                       params: Dict[str, Any]) -> None:
+    def save_model_info(self, run_id: str, metrics: Dict[str, float], params: Dict[str, Any]) -> None:
         """모델 정보를 JSON 파일로 저장"""
         # experiment_id 가져오기
         run = self.client.get_run(run_id)
@@ -142,7 +149,7 @@ class MLflowModelManager:
         # 표시할 컬럼 선택
         display_columns = ['experiment_name', 'run_name', 'metrics', 'stage', 'timestamp']
         df = df[display_columns]
-        df['metrics'] = df['metrics'].apply(lambda x: f"acc: {x.get('val_accuracy', 0):.4f}")
+        df['metrics'] = df['metrics'].apply(lambda x: f"f1: {x.get('val_f1', 0):.4f}")
         df.index.name = 'model_index'
         
         print("\n=== Model Registry ===")
@@ -210,8 +217,8 @@ class MLflowModelManager:
                         with open(self.model_info_path, 'w') as f:
                             json.dump(model_infos, f, indent=2)
                     else:
-                        print(f"No registered model version found for run_id: {info['run_id']}")
-                        
+                        print(f"No version found for run_id: {info['run_id']}")
+                
                 except (IndexError, ValueError) as e:
                     print(f"Error: {e}")
             
@@ -220,27 +227,13 @@ class MLflowModelManager:
             
             elif choice == '4':
                 break
-            
-            else:
-                print("Invalid choice. Please try again.")
-    
-    # 새로 추가된 메서드들
+
     def get_production_model_path(self, model_name: str) -> Optional[str]:
-        """프로덕션 단계의 모델 경로 반환"""
+        """프로덕션 모델 경로 반환"""
         try:
-            print("\nDebug: Finding production model path...")
-            versions = self.client.get_latest_versions(model_name, stages=["Production"])
-            print(f"Debug: Found versions: {versions}")
-            
-            if not versions:
-                print(f"No production model found for {model_name}")
-                return None
-            
-            production_version = versions[0]
+            production_version = self.client.get_latest_versions(model_name, stages=["Production"])[0]
             run_id = production_version.run_id
-            print(f"Debug: Production version info:")
-            print(f"  - Version: {production_version.version}")
-            print(f"  - Run ID: {run_id}")
+            print(f"Production model found: {production_version.version}")
             print(f"  - Source: {production_version.source}")
             
             # experiment ID 가져오기
@@ -310,7 +303,7 @@ class MLflowModelManager:
                 return None
         return None
     
-    def get_best_model_info(self, metric: str = "val_accuracy") -> Optional[Dict]:
+    def get_best_model_info(self, metric: str = "val_f1") -> Optional[Dict]:
         """최고 성의 모델 정보 반환"""
         try:
             with open(self.model_info_path, 'r') as f:

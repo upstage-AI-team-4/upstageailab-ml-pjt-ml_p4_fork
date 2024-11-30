@@ -115,6 +115,9 @@ class Config:
         self.raw_data_path = self.data_path / 'raw'
         self.processed_data_path = self.data_path / 'processed'
 
+        self.data.train_data_path = str(self.raw_data_path / self.data.train_data_path)
+        self.data.val_data_path = str(self.raw_data_path / self.data.val_data_path)
+
         # MLflow 설정
         self.mlflow = MLflowConfig(**self._config['mlflow'])
         
