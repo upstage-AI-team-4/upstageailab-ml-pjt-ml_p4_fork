@@ -86,33 +86,26 @@ def setup_mlflow_server(config: Config):
     mlflow.set_tracking_uri(config.mlflow.tracking_uri)
 
 def initialize_mlflow(config: Config) -> str:
-    """MLflow 초기화 및 설정
-    
-    Args:
-        config: 설정 객체
-        
-    Returns:
-        str: experiment_id
-    """
+    """MLflow 초기화 및 설정"""
     # MLflow 실험 설정
     experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
+    
+    # 아티팩트 경로 설정
+    artifact_location = os.path.abspath(str(config.project_root / config.mlflow.artifact_location))
+    print(f"Debug: Setting artifact location to: {artifact_location}")
+    
     if experiment is None:
-        # 아티팩트 경로를 프로젝트 루트 기준으로 설정
-        artifact_location = f"file://{config.project_root / config.mlflow.artifact_location}"
         experiment_id = mlflow.create_experiment(
             name=config.mlflow.experiment_name,
-            artifact_location=artifact_location
+            artifact_location=f"file://{artifact_location}"
         )
+        print(f"Debug: Created new experiment with ID: {experiment_id}")
     else:
         experiment_id = experiment.experiment_id
+        print(f"Debug: Using existing experiment with ID: {experiment_id}")
+        print(f"Debug: Current artifact location: {experiment.artifact_location}")
     
     mlflow.set_experiment(config.mlflow.experiment_name)
-    
-    print(f"Debug: MLflow initialized:")
-    print(f"Debug: Experiment name: {config.mlflow.experiment_name}")
-    print(f"Debug: Experiment ID: {experiment_id}")
-    print(f"Debug: Artifact location: {config.mlflow.artifact_location}")
-    
     return experiment_id
 
 class MLflowModelManager:
@@ -120,17 +113,23 @@ class MLflowModelManager:
         self.config = config
         self.model_registry_path = config.mlflow.model_info_path
         
-        # MLflow 설정
-        mlflow.set_tracking_uri(config.mlflow.tracking_uri)
-        os.environ['MLFLOW_TRACKING_URI'] = config.mlflow.tracking_uri
+        # MLflow 기본 설정
+        tracking_uri = config.mlflow.tracking_uri
+        mlflow.set_tracking_uri(tracking_uri)
+        os.environ['MLFLOW_TRACKING_URI'] = tracking_uri
+        print(f"Debug: MLflow tracking URI: {tracking_uri}")
         
         # 아티팩트 저장 경로 설정
-        artifact_location = f"file://{config.project_root / config.mlflow.artifact_location}"
-        os.environ['MLFLOW_ARTIFACT_ROOT'] = artifact_location
+        self.artifact_location = os.path.abspath(str(config.project_root / config.mlflow.artifact_location))
+        os.environ['MLFLOW_ARTIFACT_ROOT'] = self.artifact_location
+        print(f"Debug: MLflow artifact root: {self.artifact_location}")
         
         # 실험 설정
         self.experiment_name = config.mlflow.experiment_name
-        mlflow.set_experiment(self.experiment_name)
+        self.experiment_id = initialize_mlflow(config)
+        
+        # MLflow 클라이언트 초기화
+        self.client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
     
     def log_config_params(self, run_id: str):
         """Log important configuration parameters"""
@@ -650,15 +649,41 @@ class MLflowModelManager:
             return None
     
     def log_model(self, model: Any, run_id: str, model_name: str):
-        """Log model to MLflow with proper artifact path"""
-        with mlflow.start_run(run_id=run_id, nested=True):
-            # 모델 저장 경로를 프로젝트 루트 기준으로 설정
-            artifact_path = "model"
-            mlflow.pytorch.log_model(
-                model,
-                artifact_path,
-                registered_model_name=model_name
-            )
+        """모델을 MLflow에 저장"""
+        print(f"\nSaving model artifacts...")
+        print(f"Debug: Run ID: {run_id}")
+        print(f"Debug: Experiment ID: {self.experiment_id}")
+        
+        try:
+            with mlflow.start_run(run_id=run_id, nested=True) as run:
+                # 모델 저장 경로 설정
+                artifact_path = "model"
+                save_path = os.path.join(self.artifact_location, self.experiment_id, run_id, "artifacts", artifact_path)
+                print(f"Debug: Full save path: {save_path}")
+                
+                # 저장 디렉토리 생성
+                os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                
+                # 모델 저장
+                mlflow.pytorch.log_model(
+                    model,
+                    artifact_path,
+                    registered_model_name=model_name
+                )
+                print(f"Debug: Model saved successfully")
+                
+                # 저장된 파일 확인
+                if os.path.exists(save_path):
+                    print(f"Debug: Verified model files at: {save_path}")
+                    print(f"Debug: Directory contents: {os.listdir(save_path)}")
+                else:
+                    print(f"Warning: Model directory not found at: {save_path}")
+                
+        except Exception as e:
+            print(f"Error saving model: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
 
 class ModelInference:
     def __init__(self, config):
