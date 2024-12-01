@@ -1,5 +1,5 @@
 from src.utils.evaluator import ModelEvaluator
-from src.utils.config import Config
+from src.config import Config
 from src.data.nsmc_dataset import NSMCDataModule
 from src.utils.mlflow_utils import MLflowModelManager
 from transformers import AutoTokenizer
