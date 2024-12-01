@@ -97,9 +97,11 @@ def initialize_mlflow(config: Config) -> str:
     # MLflow 실험 설정
     experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
     if experiment is None:
+        # 아티팩트 경로를 프로젝트 루트 기준으로 설정
+        artifact_location = f"file://{config.project_root / config.mlflow.artifact_location}"
         experiment_id = mlflow.create_experiment(
             name=config.mlflow.experiment_name,
-            artifact_location=str(config.mlflow.artifact_location)
+            artifact_location=artifact_location
         )
     else:
         experiment_id = experiment.experiment_id
@@ -114,23 +116,90 @@ def initialize_mlflow(config: Config) -> str:
     return experiment_id
 
 class MLflowModelManager:
-    def __init__(self, config: Config):
-        """MLflow 모델 관리자 초기화
-        
-        Args:
-            config: 설정 객체
-        """
+    def __init__(self, config):
         self.config = config
-        self.model_info_path = Path(config.mlflow.model_info_path)
+        self.model_registry_path = config.mlflow.model_info_path
         
-        # MLflow 클라이언트 설정
+        # MLflow 설정
         mlflow.set_tracking_uri(config.mlflow.tracking_uri)
-        self.client = mlflow.tracking.MlflowClient()
+        os.environ['MLFLOW_TRACKING_URI'] = config.mlflow.tracking_uri
         
-        print(f"Debug: MLflow Model Manager initialized")
-        print(f"Debug: Model info path: {self.model_info_path}")
-        print(f"Debug: Tracking URI: {config.mlflow.tracking_uri}")
+        # 아티팩트 저장 경로 설정
+        artifact_location = f"file://{config.project_root / config.mlflow.artifact_location}"
+        os.environ['MLFLOW_ARTIFACT_ROOT'] = artifact_location
         
+        # 실험 설정
+        self.experiment_name = config.mlflow.experiment_name
+        mlflow.set_experiment(self.experiment_name)
+    
+    def log_config_params(self, run_id: str):
+        """Log important configuration parameters"""
+        with mlflow.start_run(run_id=run_id, nested=True):
+            # Project common parameters
+            mlflow.log_params({
+                "project_name": self.config.project['name'],
+                "model_name": self.config.project['model_name'],
+                "base_path": str(self.config.project_root),
+                "experiment_name": self.experiment_name
+            })
+            
+            # Training parameters
+            training_params = {
+                "model_type": self.config.model_config['type'],
+                "pretrained_model_name": self.config.model_config['pretrained_model'],
+                "max_length": self.config.model_config['max_length'],
+                "batch_size": self.config.training_config['batch_size'],
+                "learning_rate": self.config.training_config['learning_rate'],
+                "num_epochs": self.config.training_config['num_epochs'],
+                "early_stopping_patience": self.config.training_config['early_stopping_patience'],
+                "warmup_steps": self.config.training_config['warmup_steps'],
+                "weight_decay": self.config.training_config['weight_decay'],
+                "gradient_clip_val": self.config.training_config['gradient_clip_val']
+            }
+            mlflow.log_params(training_params)
+            
+            # Save complete config as JSON artifact
+            config_dict = self.config.to_dict()
+            config_path = Path(self.config.project_root) / "artifacts" / "config.json"
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            with open(config_path, 'w', encoding='utf-8') as f:
+                json.dump(config_dict, f, indent=2, ensure_ascii=False)
+            
+            mlflow.log_artifact(str(config_path), "config")
+    
+    def get_production_model_path(self, model_name: str) -> Optional[str]:
+        """Get the path to the production model"""
+        try:
+            model_info = self.load_production_model_info()
+            if model_info is None:
+                return None
+            
+            # MLflow 모델 경로 구성
+            run_id = model_info['run_id']
+            return os.path.join(
+                str(self.config.project_root),
+                self.config.mlflow.mlrun_path,
+                self.experiment_name,
+                run_id,
+                "artifacts/model"
+            )
+        except Exception as e:
+            print(f"Error getting production model path: {str(e)}")
+            return None
+    
+    def load_production_model(self, model_name: str) -> Optional[Any]:
+        """Load the production model"""
+        try:
+            model_path = self.get_production_model_path(model_name)
+            if model_path is None:
+                return None
+            
+            return mlflow.pytorch.load_model(model_path)
+        except Exception as e:
+            print(f"Error loading production model: {str(e)}")
+            return None
+    
     def register_model(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
         """MLflow에 모델을 등록하고 버전 정보를 반환"""
         # MLflow에 모델 등록
@@ -194,7 +263,7 @@ class MLflowModelManager:
                 if model_info.get('version') == version:
                     model_info['stage'] = "Production"
                     
-            # 변경된 ��보 저장
+            # 변경된 보 저장
             with open(self.model_info_path, 'w', encoding='utf-8') as f:
                 json.dump(model_infos, f, indent=2, ensure_ascii=False)
             
@@ -579,6 +648,17 @@ class MLflowModelManager:
         except Exception as e:
             print(f"Error loading production model info: {str(e)}")
             return None
+    
+    def log_model(self, model: Any, run_id: str, model_name: str):
+        """Log model to MLflow with proper artifact path"""
+        with mlflow.start_run(run_id=run_id, nested=True):
+            # 모델 저장 경로를 프로젝트 루트 기준으로 설정
+            artifact_path = "model"
+            mlflow.pytorch.log_model(
+                model,
+                artifact_path,
+                registered_model_name=model_name
+            )
 
 class ModelInference:
     def __init__(self, config):
