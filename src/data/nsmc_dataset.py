@@ -1,21 +1,21 @@
 import os
-import pandas as pd
-import torch
-from torch.utils.data import Dataset, DataLoader
-from typing import Dict, Optional, Any
-from .text_utils import clean_text
-import requests
-from transformers import PreTrainedTokenizer
-from pytorch_lightning import LightningDataModule
 from pathlib import Path
+import pandas as pd
 import numpy as np
-import mlflow
+import pytorch_lightning as pl
+from pytorch_lightning import LightningDataModule
+from torch.utils.data import Dataset, DataLoader
+from typing import Dict, Optional, Any, Tuple
+from transformers import PreTrainedTokenizerBase
+import torch
+import requests
+from src.utils.config import Config
+from .text_utils import clean_text
 
-def download_nsmc(data_dir: str = 'data/nsmc'):
+def download_nsmc(config):
     """Download NSMC dataset"""
     base_url = "https://raw.githubusercontent.com/e9t/nsmc/master/ratings_{}.txt"
-    data_dir = Path(data_dir)
-    raw_dir = data_dir / 'raw'
+    raw_dir = Path(config.raw_data_path)
     raw_dir.mkdir(parents=True, exist_ok=True)
     
     for split in ['train', 'test']:
@@ -34,221 +34,174 @@ def sample_data(path: str, n_samples: int = 10000, random_state: int = 42):
 class NSMCDataset(Dataset):
     def __init__(
         self,
-        documents: np.ndarray,
-        labels: np.ndarray,
-        tokenizer: PreTrainedTokenizer,
-        max_length: int = 512
+        data: Tuple[np.ndarray, np.ndarray],
+        tokenizer: PreTrainedTokenizerBase,
+        max_length: int
     ):
         """
         NSMC 데이터셋
         
         Args:
-            documents: 문서 텍스트 배열
-            labels: 레이블 배열
+            data: (texts, labels) 튜플 - document 컬럼을 text로 매핑
             tokenizer: 토크나이저
             max_length: 최대 시퀀스 길이
         """
-        super().__init__()
-        self.documents = documents
-        self.labels = labels
+        self.texts, self.labels = data
         self.tokenizer = tokenizer
         self.max_length = max_length
-
-    def __len__(self) -> int:
-        return len(self.documents)
-
-    def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
-        text = clean_text(str(self.documents[idx]))
+    
+    def __len__(self):
+        return len(self.texts)
+    
+    def __getitem__(self, idx):
+        text = str(self.texts[idx])
+        label = int(self.labels[idx])
+        
+        # 텍스트 전처리
+        text = clean_text(text)
+        
+        # 토크나이징
         encoding = self.tokenizer(
             text,
-            padding='max_length',
+            add_special_tokens=True,
             max_length=self.max_length,
+            padding='max_length',
             truncation=True,
             return_tensors='pt'
         )
         
+        # 배치 차원 제거
         return {
-            'input_ids': encoding['input_ids'].squeeze(),
-            'attention_mask': encoding['attention_mask'].squeeze(),
-            'labels': torch.tensor(self.labels[idx], dtype=torch.long)
+            'input_ids': encoding['input_ids'].squeeze(0),
+            'attention_mask': encoding['attention_mask'].squeeze(0),
+            'labels': torch.tensor(label)
         }
 
-# src/data/datamodules.py
 class NSMCDataModule(LightningDataModule):
     def __init__(
         self,
-        tokenizer: PreTrainedTokenizer,
-        batch_size: int,
-        max_length: int,
-        sampling_rate: float,
-        config: Any,
-        data_dir: Optional[str] = "data",
-        train_file: Optional[str] = "ratings_train.txt",
-        val_file: Optional[str] = "ratings_test.txt",
+        config: Config,
+        tokenizer: PreTrainedTokenizerBase,
+        **kwargs
     ):
-        """
-        NSMC 데이터셋을 위한 DataModule
-        
-        Args:
-            tokenizer: 토크나이저
-            batch_size: 배치 크기
-            max_length: 최대 시퀀스 길이
-            sampling_rate: 데이터 샘플링 비율
-            config: 설정 객체
-            data_dir: 데이터 디렉토리 경로
-            train_file: 학습 데이터 파일명
-            val_file: 검증 데이터 파일명
-        """
         super().__init__()
-        self.tokenizer = tokenizer
-        self.batch_size = batch_size
-        self.max_length = max_length
-        self.sampling_rate = sampling_rate
         self.config = config
+        self.tokenizer = tokenizer
         
-        self.data_dir = Path(data_dir)
-        self.train_file = self.data_dir / "raw" / train_file
-        self.val_file = self.data_dir / "raw" / val_file
+        # 데이터셋 설정
+        self.batch_size = self.config.training_config['batch_size']
+        self.max_length = self.config.training_config['max_length']
+        self.num_workers = kwargs.get('num_workers', 4)
         
+        # 데이터 경로
+        self.train_path = self.config.paths['raw_data'] / self.config.data['train_data_path']
+        self.val_path = self.config.paths['raw_data'] / self.config.data['val_data_path']
+        
+        # 데이터셋
         self.train_dataset = None
         self.val_dataset = None
-    
+        
     def prepare_data(self):
         """데이터 준비"""
         # 데이터 디렉토리 생성
-        self.data_dir.mkdir(parents=True, exist_ok=True)
-        (self.data_dir / "raw").mkdir(exist_ok=True)
-        (self.data_dir / "processed").mkdir(exist_ok=True)
+        self.config.paths['raw_data'].mkdir(parents=True, exist_ok=True)
+        self.config.paths['processed_data'].mkdir(parents=True, exist_ok=True)
         
-        # 데이터 파일이 없으면 다운로드
-        if not self.train_file.exists() or not self.val_file.exists():
-            print("No dataset files found. Downloading NSMC dataset...")
-            download_nsmc(str(self.data_dir))
-
+        # 학습 데이터 다운로드
+        if not self.train_path.exists():
+            print("Downloading training data...")
+            download_dataset(self.config.data['train_data_path'], self.config.paths['raw_data'])
+            
+        # 검증 데이터 다운로드
+        if not self.val_path.exists():
+            print("Downloading validation data...")
+            download_dataset(self.config.data['val_data_path'], self.config.paths['raw_data'])
+    
     def setup(self, stage: Optional[str] = None):
         """데이터셋 설정"""
-        if stage == "fit" or stage is None:
-            # 파일 존재 확인
-            if not self.train_file.exists() or not self.val_file.exists():
-                raise FileNotFoundError(
-                    f"Dataset files not found. Please check if files exist at:\n"
-                    f"Train: {self.train_file}\n"
-                    f"Val: {self.val_file}"
-                )
+        if stage == 'fit' or stage is None:
+            # 학습 데이터셋 로드
+            train_data = load_dataset(str(self.train_path), self.config.data['column_mapping'])
+            if self.config.data['sampling_rate'] < 1.0:
+                train_data = sample_dataset(train_data, self.config.data['sampling_rate'])
+            self.train_dataset = NSMCDataset(train_data, self.tokenizer, self.max_length)
             
-            # 학습 데이터 로드
-            train_df = pd.read_csv(self.train_file, sep='\t')
-            if self.sampling_rate < 1.0:
-                train_df = train_df.sample(frac=self.sampling_rate, random_state=42)
+            # 검증 데이터셋 로드
+            val_data = load_dataset(str(self.val_path), self.config.data['column_mapping'])
+            if self.config.data['sampling_rate'] < 1.0:
+                val_data = sample_dataset(val_data, self.config.data['sampling_rate'])
+            self.val_dataset = NSMCDataset(val_data, self.tokenizer, self.max_length)
             
-            # 컬럼 이름 매핑
-            train_df = train_df.rename(columns={
-                self.config.data.column_mapping['text']: 'text',
-                self.config.data.column_mapping['label']: 'label'
-            })
-            
-            # 데이터셋 생성
-            self.train_dataset = NSMCDataset(
-                documents=train_df['text'].values,
-                labels=train_df['label'].values,
-                tokenizer=self.tokenizer,
-                max_length=self.max_length
-            )
-            
-            # 검증 데이터도 동일하게 처리
-            val_df = pd.read_csv(self.val_file, sep='\t')
-            if self.sampling_rate < 1.0:
-                val_df = val_df.sample(frac=self.sampling_rate, random_state=42)
-            
-            val_df = val_df.rename(columns={
-                self.config.data.column_mapping['text']: 'text',
-                self.config.data.column_mapping['label']: 'label'
-            })
-            
-            self.val_dataset = NSMCDataset(
-                documents=val_df['text'].values,
-                labels=val_df['label'].values,
-                tokenizer=self.tokenizer,
-                max_length=self.max_length
-            )
+            print(f"Train dataset size: {len(self.train_dataset)}")
+            print(f"Validation dataset size: {len(self.val_dataset)}")
     
     def train_dataloader(self):
+        """학습 데이터로더 반환"""
         return DataLoader(
             self.train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=4
+            num_workers=self.num_workers
         )
     
     def val_dataloader(self):
+        """검증 데이터로더 반환"""
         return DataLoader(
             self.val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            num_workers=4
+            num_workers=self.num_workers
         )
 
-def log_data_info(data_module, config):
-    """Log dataset information to MLflow and print dataset details."""
-    train_path = config.data.train_data_path
-    val_path = config.data.val_data_path
-    print("=" * 50)
-    print(f"Train Path: {train_path}")
-    print(f"Val Path: {val_path}")
-    # Load raw data
-    train_df = pd.read_csv(train_path, sep='\t')
-    val_df = pd.read_csv(val_path, sep='\t')
+def log_data_info(data_module: NSMCDataModule):
+    """데이터셋 정보 출력"""
+    print("\n=== Dataset Information ===")
     
-    # Print raw data examples and size
-    print("\n=== Raw Data Examples ===")
-    print(train_df.head())
-    print(f"\nTrain Data Size: {len(train_df)}")
-    print(f"Validation Data Size: {len(val_df)}")
-    
-    # Print label distribution in raw data
-    print("\n=== Raw Data Label Distribution ===")
-    print("Train Labels:")
-    print(train_df['label'].value_counts())
-    print("Validation Labels:")
-    print(val_df['label'].value_counts())
-    
-    # Log meta data
-    for name, df in [("train", train_df), ("val", val_df)]:
-        mlflow.log_param(f"{name}_num_rows", len(df))
-        mlflow.log_param(f"{name}_num_columns", len(df.columns))
-        mlflow.log_param(f"{name}_columns", df.columns.tolist())
-        
-        # Log statistics
-        stats = df.describe(include='all').to_dict()
-        mlflow.log_dict(stats, f"{name}_data_statistics.json")
-        
-        # Log NaNs and zeros
-        nans = df.isna().sum().to_dict()
-        zeros = (df == 0).sum().to_dict()
-        mlflow.log_dict(nans, f"{name}_nans.json")
-        mlflow.log_dict(zeros, f"{name}_zeros.json")
-    
-    # Log tokenized data
-    for name, dataset in [("train", data_module.train_dataset), ("val", data_module.val_dataset)]:
-        tokenized_samples = [
-            {
-                'input_ids': sample['input_ids'].tolist(),
-                'attention_mask': sample['attention_mask'].tolist(),
-                'labels': sample['labels'].item()
-            }
-            for sample in [dataset[i] for i in range(min(5, len(dataset)))]
-        ]
-        mlflow.log_dict(tokenized_samples, f"{name}_tokenized_samples.json")
-    
-    # Print actual dataset sizes
-    print(f"\nActual Train Dataset Size: {len(data_module.train_dataset)}")
-    print(f"Actual Validation Dataset Size: {len(data_module.val_dataset)}")
-    
-    # Print label distribution in processed data
-    print("\n=== Processed Data Label Distribution ===")
-    print("Train Labels:")
+    # 학습 데이터 레이블 분포
     train_labels = [sample['labels'].item() for sample in data_module.train_dataset]
+    print("\nTrain Label Distribution:")
     print(pd.Series(train_labels).value_counts())
-    print("Validation Labels:")
+    
+    # 검증 데이터 레이블 분포
     val_labels = [sample['labels'].item() for sample in data_module.val_dataset]
+    print("\nValidation Label Distribution:")
     print(pd.Series(val_labels).value_counts())
+
+def download_dataset(filename: str, save_path: Path):
+    """NSMC 데이터셋 다운로드"""
+    base_url = "https://raw.githubusercontent.com/e9t/nsmc/master"
+    
+    # 저장 경로 생성
+    save_path.mkdir(parents=True, exist_ok=True)
+    file_path = save_path / filename
+    
+    # 파일 다운로드
+    url = f"{base_url}/{filename}"
+    response = requests.get(url)
+    response.raise_for_status()
+    
+    # 파일 저장
+    with open(file_path, 'wb') as f:
+        f.write(response.content)
+    print(f"Downloaded {filename} to {file_path}")
+
+def load_dataset(file_path: str, column_mapping: Dict[str, str]) -> Tuple[np.ndarray, np.ndarray]:
+    """데이터셋 로드 및 전처리"""
+    df = pd.read_csv(file_path, sep='\t')
+    
+    # 컬럼 이름 매핑
+    text_col = column_mapping['text']
+    label_col = column_mapping['label']
+    
+    return df[text_col].values, df[label_col].values
+
+def sample_dataset(data: Tuple[np.ndarray, np.ndarray], sampling_rate: float) -> Tuple[np.ndarray, np.ndarray]:
+    """데이터셋 샘플링"""
+    if sampling_rate >= 1.0:
+        return data
+    
+    texts, labels = data
+    n_samples = int(len(texts) * sampling_rate)
+    indices = np.random.choice(len(texts), n_samples, replace=False)
+    
+    return texts[indices], labels[indices]

@@ -5,79 +5,132 @@ import json
 from datetime import datetime
 import mlflow
 import torch
+import pytorch_lightning as pl
 from pytorch_lightning import Trainer, seed_everything
+import transformers
 from transformers import AutoTokenizer
-from src.utils.visualization import plot_confusion_matrix
-from src.models.kcbert_model import KcBERT
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.loggers import TensorBoardLogger
+
+from src.config import Config
 from src.data.nsmc_dataset import NSMCDataModule, log_data_info
-from src.utils.config import Config
-from src.utils.mlflow_utils import MLflowModelManager, cleanup_artifacts
+from src.utils.mlflow_utils import MLflowModelManager, cleanup_artifacts, initialize_mlflow, setup_mlflow_server
 from src.utils.evaluator import ModelEvaluator
 from src.utils.inferencer import ModelInferencer
-import pandas as pd
-import numpy as np
+from src.utils.visualization import plot_confusion_matrix
 
 # torchvision 관련 경고 무시
 warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 # Tensor Core 최적화를 위한 precision 설정
 torch.set_float32_matmul_precision('medium')  # 또는 'high'
 
-def get_local_path_from_uri(uri: str) -> Path:
-    """MLflow URI를 로컬 경로로 변환"""
-    if uri.startswith(('file:///', 'file://', 'file:')):
-        path = uri.split('file:')[-1].lstrip('/')
-        if os.name == 'nt' and len(path) >= 2 and path[1] == ':':
-            return Path(path)
-        return Path('/' + path)
-    return Path(uri)
-
 def train(config):
     print("=" * 50)
     print("\n=== Training Configuration ===")
-    print(f"Pretrained Model: {config.base_training.pretrained_model}")
-    print(f"Batch Size: {config.base_training.batch_size}")
-    print(f"Learning Rate: {config.base_training.lr}")
-    print(f"Epochs: {config.base_training.epochs}")
-    print(f"Max Length: {config.base_training.max_length}")
+    print(f"Model: {config.project['model_name']}")
+    print(f"Pretrained Model: {config.model_config['pretrained_model']}")
+    print(f"Batch Size: {config.training_config['batch_size']}")
+    print(f"Learning Rate: {config.training_config['lr']}")
+    print(f"Epochs: {config.training_config['epochs']}")
+    print(f"Max Length: {config.training_config['max_length']}")
     print("=" * 50 + "\n")
-    mlflow.set_tracking_uri(config.mlflow.tracking_uri)
     
-    # Experiment 설정
-    mlflow.set_experiment(config.mlflow.experiment_name)
+    # MLflow 설정
+    setup_mlflow_server(config)
+    experiment_id = initialize_mlflow(config)
     
-    seed_everything(config.base_training.random_seed)
+    seed_everything(config.project['random_state'])
     
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    run_name = f"{config.project.model_name}_{config.project.dataset_name}_{timestamp}"
+    run_name = f"{config.project['model_name']}_{config.project['dataset_name']}_{timestamp}"
     
     with mlflow.start_run(run_name=run_name) as run:
         print(f"\n=== Starting new run: {run_name} ===")
         
-        tokenizer = AutoTokenizer.from_pretrained(config.base_training.pretrained_model)
+        tokenizer = AutoTokenizer.from_pretrained(config.model_config['pretrained_model'])
         
         data_module = NSMCDataModule(
-            tokenizer=tokenizer,
-            batch_size=config.base_training.batch_size,
-            max_length=config.base_training.max_length,
-            sampling_rate=config.data.sampling_rate,
             config=config,
-            data_dir=str(config.data_path),
-            train_file=config.data.train_data_path,
-            val_file=config.data.val_data_path
+            tokenizer=tokenizer
         )
         
         data_module.prepare_data()
         data_module.setup(stage='fit')
         
-        # 데이터 정보 로깅 및 출력
-        log_data_info(data_module, config)
+        # Log data info
+        log_data_info(data_module)
         
-        model = KcBERT(**config.get_model_kwargs())
+        # Model initialization
+        if config.project['model_name'].startswith('KcBERT'):
+            from src.models.kcbert_model import KcBERT
+            model_class = KcBERT
+        elif config.project['model_name'].startswith('KcELECTRA'):
+            from src.models.kcelectra_model import KcELECTRA
+            model_class = KcELECTRA
+        else:
+            raise ValueError(f"Unknown model: {config.project['model_name']}")
         
-        trainer = Trainer(**config.get_trainer_kwargs())
+        model = model_class(**config.get_model_kwargs())
+        
+        # Optimized training configuration
+        callbacks = [
+            # Early stopping
+            EarlyStopping(
+                monitor='val_loss',
+                patience=3,
+                mode='min',
+                verbose=True
+            ),
+            # Model checkpoint
+            ModelCheckpoint(
+                dirpath=config.checkpoint['dirpath'],
+                filename=config.checkpoint['filename'],
+                monitor=config.checkpoint['monitor'],
+                mode=config.checkpoint['mode'],
+                save_top_k=config.checkpoint['save_top_k'],
+                save_last=config.checkpoint['save_last'],
+                every_n_epochs=config.checkpoint['every_n_epochs']
+            ),
+            # Learning rate monitor
+            LearningRateMonitor(logging_interval='step')
+        ]
+        
+        # Trainer configuration with optimizations for single GPU
+        trainer_kwargs = {
+            'max_epochs': config.training_config['epochs'],
+            'accelerator': 'gpu' if torch.cuda.is_available() else 'cpu',
+            'devices': 1,
+            'precision': config.training_config.get('precision', 16),
+            'deterministic': True,
+            'gradient_clip_val': 1.0,
+            'accumulate_grad_batches': config.training_config.get('accumulate_grad_batches', 1),
+            'strategy': 'auto',  # Use auto strategy instead of DDP
+            'enable_progress_bar': True,
+            'log_every_n_steps': 100,
+            'callbacks': callbacks,
+            'num_sanity_val_steps': 0,
+            'enable_checkpointing': True,
+            'detect_anomaly': False,
+            'inference_mode': True,
+            'move_metrics_to_cpu': True,
+            'logger': True
+        }
+        
+        # Logger 설정
+        logger = TensorBoardLogger(
+            save_dir=config.common['trainer']['logger']['save_dir'],
+            name=config.common['trainer']['logger']['name'],
+            version=config.common['trainer']['logger']['version']
+        )
+        trainer_kwargs['logger'] = logger
+        
+        # Trainer 초기화
+        trainer = Trainer(**trainer_kwargs)
+        
+        # Train the model
         trainer.fit(model, data_module)
         
-        # 평가기 초기화 및 사용
+        # Evaluation
         evaluator = ModelEvaluator(model, tokenizer)
         eval_metrics = evaluator.evaluate_dataset(data_module)
         
@@ -93,50 +146,72 @@ def train(config):
             "val_f1": val_f1
         })
         
-        # Confusion matrix 생성 및 로깅
-        all_preds = []
-        all_labels = []
-        model.eval()
-        with torch.no_grad():
-            for batch in data_module.val_dataloader():
-                batch = {k: v.to(model.device) for k, v in batch.items()}
-                outputs = model(**{k: v for k, v in batch.items() if k != 'labels'})
-                preds = torch.argmax(outputs.logits, dim=-1)
-                all_preds.extend(preds.cpu().numpy())
-                all_labels.extend(batch['labels'].cpu().numpy())
-        
-        cm_path = plot_confusion_matrix(all_labels, all_preds, log_path='confusion_matrix.png')
-        mlflow.log_artifact(cm_path, "confusion_matrix")
-        os.remove(cm_path)
-        
-        cm_norm_path = plot_confusion_matrix(all_labels, all_preds, normalize=True, log_path='confusion_matrix_normalized.png')
-        mlflow.log_artifact(cm_norm_path, "confusion_matrix_normalized")
-        os.remove(cm_norm_path)
-        
-        # 모델 등록 및 정보 저장
+        # Model registration if performance meets threshold
         if val_f1 > config.mlflow.model_registry_metric_threshold:
-            model_manager = MLflowModelManager(config)
-            model_version = model_manager.register_model(config.project.model_name, run.info.run_id)
-            model_manager.save_model_info(run.info.run_id, {"val_f1": val_f1}, config.get_model_kwargs())
+            print("\nSaving model artifacts...")
+            
+            try:
+                # 모델 저장 경로 구성
+                model_path = Path("mlruns") / run.info.experiment_id / run.info.run_id / "artifacts/model"
+                model_path.mkdir(parents=True, exist_ok=True)
+                print(f"Debug: Saving model to path: {model_path}")
+                print(f"Debug: Run ID: {run.info.run_id}")
+                print(f"Debug: Experiment ID: {run.info.experiment_id}")
+                
+                # 모델 저장
+                mlflow.pytorch.save_model(
+                    pytorch_model=model,
+                    path=str(model_path)
+                )
+                print("Debug: Model saved successfully")
+                
+                # MLflow에 모델 경로 기록
+                mlflow.log_param("model_path", str(model_path))
+                print("Debug: Model path logged to MLflow")
+                
+                # 혼동 행렬 저장
+                print("\nGenerating and logging confusion matrix...")
+                confusion_matrix_img = plot_confusion_matrix(data_module.val_dataset, model, tokenizer)
+                confusion_matrix_path = model_path.parent / "confusion_matrix.png"
+                confusion_matrix_img.save(str(confusion_matrix_path))
+                print("Debug: Confusion matrix saved successfully")
+                
+                # 모델 정보 저장
+                print("Debug: Saving model registry information...")
+                model_manager = MLflowModelManager(config)
+                model_version = model_manager.register_model(config.project['model_name'], run.info.run_id)
+                model_manager.save_model_info(
+                    run_id=run.info.run_id,
+                    metrics={"val_f1": val_f1},
+                    params=config.get_model_kwargs(),
+                    version=model_version.version
+                )
+                print("Debug: Model registry information saved successfully")
+                
+            except Exception as e:
+                print(f"Debug: Error during model saving: {str(e)}")
+                print(f"Debug: Error type: {type(e)}")
+                import traceback
+                print("Debug: Full traceback:")
+                traceback.print_exc()
+                raise
         
         return run.info.run_id, {"val_accuracy": val_accuracy, "val_f1": val_f1}, run_name, data_module, model, tokenizer
 
 def main():
     config = Config()
     
-    log_dir = config.base_path / "logs" / "lightning_logs"
-    os.makedirs(log_dir, exist_ok=True)
-    
+    print('\n' * 3)
     print("=" * 50)
     print("\n=== MLflow Configuration ===")
     print(f"MLflow Tracking URI: {config.mlflow.tracking_uri}")
     print(f"MLflow Run Path: {config.mlflow.mlrun_path}")
     print(f"MLflow Experiment Name: {config.mlflow.experiment_name}")
     print("=" * 50 + "\n")
-    print(f"Model Name: {config.project.model_name}")
-    print(f"Dataset Name: {config.data.dataset_name}")
-    print(f"Sampling Rate: {config.data.sampling_rate}")
-    print(f"Test Size: {config.data.test_size}")
+    print(f"Model Name: {config.project['model_name']}")
+    print(f"Dataset Name: {config.data['dataset_name']}")
+    print(f"Sampling Rate: {config.data['sampling_rate']}")
+    print(f"Test Size: {config.data['test_size']}")
 
     run_id, metrics, run_name, data_module, model, tokenizer = train(config)
     
@@ -157,7 +232,7 @@ def main():
     model.eval()
     with torch.no_grad():
         for idx in indices:
-            text = val_dataset.documents[idx]
+            text = val_dataset.texts[idx]
             true_label = val_dataset.labels[idx]
             
             sample = val_dataset[idx]
@@ -197,14 +272,15 @@ def main():
         print(f"Confidence: {result['confidence']:.4f}")
     
     print("\n=== MLflow Run Information ===")
-    print(f"Run logs and artifacts: {config.mlflow.mlrun_path / run_id}")
+    print(f"Run logs and artifacts: {Path(config.mlflow.mlrun_path) / run_id}")
     print("=" * 50)
     
     if input("\nWould you like to manage models? (y/n): ").lower() == 'y':
         model_manager = MLflowModelManager(config)
-        model_manager.manage_model(config.project.model_name)
+        model_manager.manage_model(config.project['model_name'])
     
     cleanup_artifacts(config, metrics, run_id)
 
 if __name__ == '__main__':
     main()
+

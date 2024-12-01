@@ -9,227 +9,161 @@ from pathlib import Path
 import os
 import shutil
 import torch
+import pytorch_lightning as pl
+import torch.nn as nn
+from transformers import BertForSequenceClassification
+import torch.optim as optim
+from torch.optim.lr_scheduler import ExponentialLR, CosineAnnealingLR
 # config
 # pretrained_model
 # num_labels
 # optimizer
 # lr_scheduler  
-class KcBERT(BaseTextClassifier):
+class KcBERT(pl.LightningModule):
     def __init__(
         self,
-        pretrained_model: str,
-        model_dir: Path,
-        model_name: str,
-        num_labels: int,
-        learning_rate: float,
-        optimizer: str = 'AdamW',
-        lr_scheduler: str = 'cos',
-        num_unfreeze_layers: int = -1  # -1: 모든 레이어 학습, 0: 분류기만 학습
+        pretrained_model: str = "beomi/kcbert-base",
+        num_labels: int = 2,
+        num_unfreeze_layers: int = -1,
+        **kwargs
     ):
+        """
+        KcBERT 모델
+        
+        Args:
+            pretrained_model: 사전학습 모델 경로
+            num_labels: 레이블 수
+            num_unfreeze_layers: Fine-tuning할 레이어 수 (-1: 전체)
+        """
         super().__init__()
         self.save_hyperparameters()
         
-        # 설정값들을 인스턴스 변수로 저장
-        self.learning_rate = learning_rate
-        self.optimizer_type = optimizer
-        self.scheduler_type = lr_scheduler
-        self.num_unfreeze_layers = num_unfreeze_layers
+        # 모델 설정
+        self.model = BertForSequenceClassification.from_pretrained(
+            pretrained_model,
+            num_labels=num_labels
+        )
         
-        self.model_path = model_dir / model_name
-        os.makedirs(self.model_path, exist_ok=True)
-        self.model = self._load_model(pretrained_model, num_labels)
-        self.tokenizer = self._load_tokenizer(pretrained_model)
+        # Freeze layers if specified
+        if num_unfreeze_layers > 0:
+            self._freeze_layers(num_unfreeze_layers)
         
-        # 레이어 동결 설정
-        self._set_layers_trainable()
+        # 학습 파라미터 초기화
+        self.lr = 5e-6
+        self.optimizer_name = 'AdamW'
+        self.scheduler_name = 'exp'
+    
+    def _freeze_layers(self, num_unfreeze_layers: int):
+        """레이어 동결 설정"""
+        # 모든 파라미터 동결
+        for param in self.model.parameters():
+            param.requires_grad = False
         
-        self.metrics = torchmetrics.MetricCollection({
-            'accuracy': torchmetrics.Accuracy(task='multiclass', num_classes=num_labels),
-            'f1': torchmetrics.F1Score(task='multiclass', num_classes=num_labels),
-            'precision': torchmetrics.Precision(task='multiclass', num_classes=num_labels),
-            'recall': torchmetrics.Recall(task='multiclass', num_classes=num_labels)
-        })
+        # 분류기 레이어는 항상 학습
+        for param in self.model.classifier.parameters():
+            param.requires_grad = True
         
-        self.train_metrics = self.metrics.clone(prefix='train_')
-        self.val_metrics = self.metrics.clone(prefix='val_')
+        if num_unfreeze_layers == -1:
+            # 모든 레이어 학습
+            for param in self.model.parameters():
+                param.requires_grad = True
+        elif num_unfreeze_layers > 0:
+            # 지정된 수의 인코더 레이어만 학습
+            # BERT는 일반적으로 12개의 레이어를 가짐
+            total_layers = len(self.model.bert.encoder.layer)
+            for i in range(total_layers - num_unfreeze_layers, total_layers):
+                for param in self.model.bert.encoder.layer[i].parameters():
+                    param.requires_grad = True
     
-    def _check_model_files(self) -> bool:
-        """모델 파일들이 로컬에 존재하는지 확인"""
-        required_files = ['config.json', 'pytorch_model.bin', 'tokenizer.json', 'tokenizer_config.json', 'vocab.txt']
-        return all((self.model_path / file).exists() for file in required_files)
+    def forward(self, input_ids, attention_mask=None, labels=None):
+        """Forward pass"""
+        outputs = self.model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            labels=labels
+        )
+        return outputs
     
-    def _load_model(self, pretrained_model: str, num_labels: int):
-        if self._check_model_files():
-            print(f"Loading model from local path: {self.model_path}")
-            return BertForSequenceClassification.from_pretrained(
-                str(self.model_path),
-                num_labels=num_labels
-            )
-        else:
-            print(f"Downloading model from HuggingFace: {pretrained_model}")
-            model = BertForSequenceClassification.from_pretrained(
-                pretrained_model,
-                num_labels=num_labels
-            )
-            self.model_path.parent.mkdir(parents=True, exist_ok=True)
-            model.save_pretrained(str(self.model_path))
-            return model
+    def training_step(self, batch, batch_idx):
+        """학습 단계"""
+        outputs = self(**batch)
+        loss = outputs.loss
+        
+        # 메트릭스 계산
+        predictions = torch.argmax(outputs.logits, dim=1)
+        correct = (predictions == batch['labels']).sum()
+        total = len(predictions)
+        accuracy = correct.float() / total
+        
+        # F1, Precision, Recall 계산
+        tp = ((predictions == 1) & (batch['labels'] == 1)).sum().float()
+        fp = ((predictions == 1) & (batch['labels'] == 0)).sum().float()
+        fn = ((predictions == 0) & (batch['labels'] == 1)).sum().float()
+        tn = ((predictions == 0) & (batch['labels'] == 0)).sum().float()
+        
+        precision = tp / (tp + fp + 1e-7)
+        recall = tp / (tp + fn + 1e-7)
+        f1 = 2 * precision * recall / (precision + recall + 1e-7)
+        
+        # 로깅
+        self.log('train_loss', loss, prog_bar=True)
+        self.log('train_accuracy', accuracy, prog_bar=True)
+        self.log('train_f1', f1, prog_bar=True)
+        self.log('train_precision', precision, prog_bar=True)
+        self.log('train_recall', recall, prog_bar=True)
+        
+        return loss
     
-    def _load_tokenizer(self, pretrained_model: str):
-        """로컬 경로에서 토크나이저를 로드하거나 허깅페이스에서 다운로드"""
-        try:
-            if self._check_model_files():
-                print(f"Loading tokenizer from local path: {self.model_path}")
-                return BertTokenizer.from_pretrained(str(self.model_path))
-            else:
-                print(f"Downloading tokenizer from HuggingFace: {pretrained_model}")
-                tokenizer = BertTokenizer.from_pretrained(pretrained_model)
-                # 토크나이저 저장
-                tokenizer.save_pretrained(str(self.model_path))
-                return tokenizer
-        except Exception as e:
-            print(f"Error loading tokenizer: {str(e)}")
-            raise
-    
-    def forward(self, **kwargs):
-        return self.model(**kwargs)
-    
-    def _compute_loss(self, batch):
-        data, labels = batch
-        outputs = self(input_ids=data, labels=labels)
-        return outputs.loss
-    
-    def _compute_metrics(self, y_true, y_pred):
-        metrics = self.train_metrics(y_pred, y_true)
-        return {k: v.item() for k, v in metrics.items()}
+    def validation_step(self, batch, batch_idx):
+        """검증 단계"""
+        outputs = self(**batch)
+        loss = outputs.loss
+        
+        # 메트릭스 계산
+        predictions = torch.argmax(outputs.logits, dim=1)
+        correct = (predictions == batch['labels']).sum()
+        total = len(predictions)
+        accuracy = correct.float() / total
+        
+        # F1, Precision, Recall 계산
+        tp = ((predictions == 1) & (batch['labels'] == 1)).sum().float()
+        fp = ((predictions == 1) & (batch['labels'] == 0)).sum().float()
+        fn = ((predictions == 0) & (batch['labels'] == 1)).sum().float()
+        tn = ((predictions == 0) & (batch['labels'] == 0)).sum().float()
+        
+        precision = tp / (tp + fp + 1e-7)
+        recall = tp / (tp + fn + 1e-7)
+        f1 = 2 * precision * recall / (precision + recall + 1e-7)
+        
+        # 로깅
+        self.log('val_loss', loss, prog_bar=True)
+        self.log('val_accuracy', accuracy, prog_bar=True)
+        self.log('val_f1', f1, prog_bar=True)
+        self.log('val_precision', precision, prog_bar=True)
+        self.log('val_recall', recall, prog_bar=True)
     
     def configure_optimizers(self):
-        """Configure optimizers and learning rate schedulers"""
-        optimizer = self._get_optimizer()
-        scheduler = self._get_scheduler(optimizer)
+        """옵티마이저와 스케줄러 설정"""
+        # Optimizer
+        if self.optimizer_name.lower() == 'adamw':
+            optimizer = optim.AdamW(self.parameters(), lr=self.lr)
+        elif self.optimizer_name.lower() == 'adam':
+            optimizer = optim.Adam(self.parameters(), lr=self.lr)
+        else:
+            raise ValueError(f"Unsupported optimizer: {self.optimizer_name}")
+        
+        # Scheduler
+        if self.scheduler_name.lower() == 'exp':
+            scheduler = ExponentialLR(optimizer, gamma=0.9)
+        elif self.scheduler_name.lower() == 'cosine':
+            scheduler = CosineAnnealingLR(optimizer, T_max=10)
+        else:
+            raise ValueError(f"Unsupported scheduler: {self.scheduler_name}")
         
         return {
             'optimizer': optimizer,
             'lr_scheduler': {
                 'scheduler': scheduler,
-                'interval': 'step',
-                'frequency': 1,
-                'monitor': 'val_loss',
-                'strict': True,
-                'name': None,
+                'interval': 'epoch'
             }
         }
-    
-    def _set_layers_trainable(self, verbose=False):
-        """Set which layers to train"""
-        # 모든 파라미터 동결
-        for param in self.model.parameters():
-            param.requires_grad = False
-            
-        # 분류기 레이어는 항상 학습
-        for param in self.model.classifier.parameters():
-            param.requires_grad = True
-            
-        if self.num_unfreeze_layers == -1:
-            # 모든 레이어 학습
-            for param in self.model.parameters():
-                param.requires_grad = True
-        elif self.num_unfreeze_layers > 0:
-            # 정된 수의 인코더 레이어만 학습
-            # BERT는 일반적으로 12개의 레이어를 가짐
-            total_layers = len(self.model.bert.encoder.layer)
-            for i in range(total_layers - self.num_unfreeze_layers, total_layers):
-                for param in self.model.bert.encoder.layer[i].parameters():
-                    param.requires_grad = True
-                    
-        # 학습 가능한 파라미터 수 출력
-        trainable_params = sum(p.numel() for p in self.model.parameters() if p.requires_grad)
-        total_params = sum(p.numel() for p in self.model.parameters())
-        print(f"\nTrainable parameters: {trainable_params:,} / {total_params:,} "
-              f"({100 * trainable_params / total_params:.2f}%)")
-        
-        if verbose:
-            # 레이어별 학습 여부 출력
-            print("\nTrainable layers:")
-            for name, param in self.model.named_parameters():
-                if param.requires_grad:
-                    print(f"✓ {name}")
-                else:
-                    print(f"✗ {name}")
-    
-    def _get_optimizer(self):
-        """Get optimizer with different learning rates for different layers"""
-        no_decay = ['bias', 'LayerNorm.weight']
-        
-        # classifier 파라미터를 제외한 파라미터들을 그룹화
-        optimizer_grouped_parameters = [
-            {
-                'params': [p for n, p in self.model.named_parameters() 
-                          if not any(nd in n for nd in no_decay) 
-                          and p.requires_grad
-                          and 'classifier' not in n],  # classifier 제외
-                'weight_decay': 0.01,
-                'lr': self.learning_rate
-            },
-            {
-                'params': [p for n, p in self.model.named_parameters() 
-                          if any(nd in n for nd in no_decay) 
-                          and p.requires_grad
-                          and 'classifier' not in n],  # classifier 제외
-                'weight_decay': 0.0,
-                'lr': self.learning_rate
-            },
-            {
-                'params': [p for n, p in self.model.classifier.named_parameters() 
-                          if p.requires_grad],  # classifier만 따로
-                'weight_decay': 0.01,
-                'lr': self.learning_rate * 5  # classifier는 더 높은 학습률
-            }
-        ]
-        
-        if self.optimizer_type == 'AdamW':
-            return AdamW(optimizer_grouped_parameters)
-        raise ValueError(f"Unsupported optimizer: {self.optimizer_type}")
-    
-    def _get_scheduler(self, optimizer):
-        """Get learning rate scheduler based on configuration"""
-        if self.scheduler_type == 'cos':
-            return CosineAnnealingWarmRestarts(
-                optimizer, 
-                T_0=1000,  # 더 긴 주기
-                T_mult=2,
-                eta_min=1e-6  # 최소 학습률 설정
-            )
-        elif self.scheduler_type == 'exp':
-            return ExponentialLR(optimizer, gamma=0.95)  # 감소율 조정
-        raise ValueError(f"Unsupported scheduler: {self.scheduler_type}")
-    
-    def training_step(self, batch, batch_idx):
-        outputs = self.model(**batch)
-        loss = outputs.loss
-        
-        # 메트릭 계산
-        logits = outputs.logits
-        predictions = torch.argmax(logits, dim=-1)
-        self.train_metrics(predictions, batch['labels'])
-        
-        # 로그 기록
-        self.log('train_loss', loss, on_step=True, on_epoch=True, prog_bar=True)
-        self.log_dict(self.train_metrics, on_step=False, on_epoch=True)
-        
-        return loss
-    
-    def validation_step(self, batch, batch_idx):
-        outputs = self.model(**batch)
-        loss = outputs.loss
-        
-        # 메트릭 계산
-        logits = outputs.logits
-        predictions = torch.argmax(logits, dim=-1)
-        self.val_metrics(predictions, batch['labels'])
-        
-        # 로그 기록
-        self.log('val_loss', loss, on_epoch=True, prog_bar=True)
-        self.log_dict(self.val_metrics, on_step=False, on_epoch=True)
-        
-        return loss

@@ -5,18 +5,23 @@ mlflow:
   model_registry_metric_threshold: 0.4
   mlrun_path: "mlruns"
   backend_store_uri: "mlruns"
-  model_info_path: "model_registry.json"
+  model_info_path: "config/model_registry.json"
+  artifact_location: "mlruns"
+  server_config:
+    workers: 4
+    request_header_size: 65536
+    default_artifact_root: "mlruns"
 
 project:
   random_state: 42
   dataset_name: "nsmc"
   model_name: "KcBERT"
-  
+
 # 데이터 설정
 dataset:
   nsmc:
     dataset_name: "nsmc"
-    sampling_rate: 0.001
+    sampling_rate: 0.01
     test_size: 0.2
     train_data_path: "ratings_train.txt"
     val_data_path: "ratings_test.txt"
@@ -27,98 +32,105 @@ dataset:
 # 모델 설정
 models:
   KcBERT:
+    name: "KcBERT"
     pretrained_model: "beomi/kcbert-base"
-    model_name: "KcBERT"
     model_dir: "models"
+    training:
+      epochs: 1
+      num_labels: 2
+      batch_size: 32
+      lr: 5.0e-6
+      max_length: 150
+      report_cycle: 100
+      optimizer: 'AdamW'
+      lr_scheduler: 'exp'
+      precision: 16
+      num_unfreeze_layers: -1
+      accumulate_grad_batches: 2
+      
   KcELECTRA:
+    name: "KcELECTRA"
     pretrained_model: "beomi/KcELECTRA-base"
-    model_name: "KcELECTRA"
     model_dir: "models"
-  KcBERT_large:
-    pretrained_model: "beomi/kcbert-large"
-    model_name: "KcBERT_large"
-    model_dir: "models"
-  KcELECTRA_large:
-    pretrained_model: "beomi/KcELECTRA-large"
-    model_name: "KcELECTRA_large"
-    model_dir: "models"
+    training:
+      epochs: 3
+      num_labels: 2
+      batch_size: 32
+      lr: 2.0e-5
+      max_length: 150
+      report_cycle: 100
+      optimizer: 'AdamW'
+      lr_scheduler: 'cosine'
+      precision: 16
+      num_unfreeze_layers: -1
+      accumulate_grad_batches: 2
 
-# 학습 설정
-trainings:
-  base:
-    epochs: 1
-    num_labels: 2
-    random_seed: 42
-    pretrained_model: 'beomi/kcbert-base'
-    batch_size: 16
-    lr: 5.0e-6
-    max_length: 150
-    report_cycle: 100
-    optimizer: 'AdamW'
-    lr_scheduler: 'exp'
-    precision: 16
-    num_unfreeze_layers: -1
+# 공통 설정
+common:
+  # Trainer 설정
+  trainer:
+    accelerator: "gpu"
+    devices: 1
+    deterministic: true
+    enable_progress_bar: true
+    log_every_n_steps: 100
+    num_sanity_val_steps: 0
+    default_root_dir: "logs"
+    logger:
+      save_dir: "logs"
+      name: "lightning_logs"
+      version: null
     
-    # Trainer 설정
-    trainer:
-      accelerator: "gpu"
-      devices: 1
-      deterministic: true
-      enable_progress_bar: true
-      log_every_n_steps: 100
-      num_sanity_val_steps: 0
-      default_root_dir: "logs/lightning_logs"
-      
-    # 체크포인트 설정
-    checkpoint:
-      dirpath: "checkpoints"
-      filename: "{epoch}-{val_accuracy:.4f}"
-      monitor: "val_accuracy"
-      mode: "max"
-      save_top_k: 0
-      save_last: false
-      every_n_epochs: 1
+  # 체크포인트 설정
+  checkpoint:
+    dirpath: "checkpoints"
+    filename: "{epoch}-{val_accuracy:.4f}"
+    monitor: "val_accuracy"
+    mode: "max"
+    save_top_k: 1
+    save_last: true
+    every_n_epochs: 1
+
+# Hyperparameter 탐색 설정
+hpo:
+  n_trials: 20
+  sampler: "tpe"
+  pruner: "median"
+  direction: "maximize"
+  metric: "val_accuracy"
+  
+  # 탐색 범위 설정
+  params:
+    learning_rate:
+      type: "float"
+      low: 1.0e-5
+      high: 1.0e-3
+      log: true
     
-    # Hyperparameter 탐색 설정
-    hpo:
-      n_trials: 20
-      sampler: "tpe"  # tpe, random, grid, cmaes
-      pruner: "median"  # median, hyperband
-      direction: "maximize"
-      metric: "val_accuracy"
-      
-      # 탐색 범위 설정
-      params:
-        learning_rate:
-          type: "float"
-          low: 1.0e-5
-          high: 1.0e-3
-          log: true
-        
-        batch_size:
-          type: "categorical"
-          choices: [8, 16, 32, 64]
-        
-        num_train_epochs:
-          type: "int"
-          low: 2
-          high: 10
-        
-        num_unfrozen_layers:
-          type: "int"
-          low: 1
-          high: 12
-        
-        optimizer:
-          type: "categorical"
-          choices: ["AdamW", "Adam", "RAdam"]
-        
-        lr_scheduler:
-          type: "categorical"
-          choices: ["linear", "cosine", "exp"]
-        
-        weight_decay:
-          type: "float"
-          low: 0.0
-          high: 0.1
-          log: true
+    batch_size:
+      type: "categorical"
+      choices: [16, 32, 64]
+    
+    num_train_epochs:
+      type: "int"
+      low: 2
+      high: 5
+    
+    num_unfrozen_layers:
+      type: "int"
+      low: 1
+      high: 12
+    
+    optimizer:
+      type: "categorical"
+      choices: ["AdamW", "Adam"]
+    
+    lr_scheduler:
+      type: "categorical"
+      choices: ["cosine", "exp"]
+    
+    weight_decay:
+      type: "float"
+      low: 0.0
+      high: 0.1
+      log: true
