@@ -13,7 +13,7 @@ mlruns/
 mlartifacts/
 lightning_logs/
 
-./cursorrules
+.cursorrules
 
 ### dotenv ###
 .env
