@@ -11,6 +11,7 @@ import transformers
 from transformers import AutoTokenizer
 from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
 from pytorch_lightning.loggers import TensorBoardLogger
+import shutil
 
 from src.config import Config
 from src.data.nsmc_dataset import NSMCDataModule, log_data_info
@@ -23,6 +24,22 @@ from src.utils.visualization import plot_confusion_matrix
 warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
 # Tensor Core 최적화를 위한 precision 설정
 torch.set_float32_matmul_precision('medium')  # 또는 'high'
+
+def cleanup_training_artifacts(config: Config):
+    """학습 완료 후 임시 파일 정리"""
+    print("\nCleaning up training artifacts...")
+    
+    # 체크포인트 폴더 삭제
+    checkpoint_path = config.paths['model_checkpoints']
+    if checkpoint_path.exists():
+        shutil.rmtree(checkpoint_path)
+        print(f"Removed checkpoints directory: {checkpoint_path}")
+    
+    # 모델 폴더 삭제
+    model_path = config.paths['model']
+    if model_path.exists():
+        shutil.rmtree(model_path)
+        print(f"Removed model directory: {model_path}")
 
 def train(config):
     print("=" * 50)
@@ -211,6 +228,9 @@ def train(config):
                 print("Debug: Full traceback:")
                 traceback.print_exc()
                 raise
+        
+        # 학습 완료 후 임시 파일 정리
+        cleanup_training_artifacts(config)
         
         return run.info.run_id, {"val_accuracy": val_accuracy, "val_f1": val_f1}, run_name, data_module, model, tokenizer
 

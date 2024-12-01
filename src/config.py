@@ -22,9 +22,10 @@ class MLflowConfig:
 class Config:
     def __init__(self, config_path="config/config.yaml"):
         """설정 초기화"""
-        self.config_path = config_path
+        # 프로젝트 루트 디렉토리 찾기
+        self.project_root = self._find_project_root()
+        self.config_path = self.project_root / config_path
         self.config = self._load_config()
-        self.base_path = Path.cwd()
         
         # 프로젝트 설정 먼저 로드 (다른 경로에서 사용됨)
         self.project = self.config["project"]
@@ -32,22 +33,22 @@ class Config:
         # 기본 경로 설정 (프로젝트 구조에 맞게 체계적으로)
         self.paths = {
             # 데이터 관련 경로
-            'data': self.base_path / 'data',
-            'raw_data': self.base_path / 'data' / 'raw' / self.project['dataset_name'],
-            'processed_data': self.base_path / 'data' / 'processed' / self.project['dataset_name'],
+            'data': self.project_root / 'data',
+            'raw_data': self.project_root / 'data' / 'raw' / self.project['dataset_name'],
+            'processed_data': self.project_root / 'data' / 'processed' / self.project['dataset_name'],
             
             # 모델 관련 경로
-            'models_base': self.base_path / 'models',
-            'model': self.base_path / 'models' / self.project['model_name'],
+            'models_base': self.project_root / 'models',
+            'model': self.project_root / 'models' / self.project['model_name'],
             
             # 로그 관련 경로
-            'logs_base': self.base_path / 'logs',
-            'train_logs': self.base_path / 'logs' / 'training',
-            'tensorboard': self.base_path / 'logs' / 'tensorboard',
+            'logs_base': self.project_root / 'logs',
+            'train_logs': self.project_root / 'logs' / 'training',
+            'tensorboard': self.project_root / 'logs' / 'tensorboard',
             
             # 체크포인트 관련 경로
-            'checkpoints_base': self.base_path / 'checkpoints',
-            'model_checkpoints': self.base_path / 'checkpoints' / self.project['model_name'],
+            'checkpoints_base': self.project_root / 'checkpoints',
+            'model_checkpoints': self.project_root / 'checkpoints' / self.project['model_name'],
         }
         
         # MLflow 관련 설정
@@ -55,10 +56,10 @@ class Config:
             tracking_uri=self.config["mlflow"]["tracking_uri"],
             experiment_name=self.config["mlflow"]["experiment_name"],
             model_registry_metric_threshold=self.config["mlflow"]["model_registry_metric_threshold"],
-            mlrun_path=self.base_path / self.config["mlflow"]["mlrun_path"],
-            backend_store_uri=self.base_path / self.config["mlflow"]["backend_store_uri"],
-            model_info_path=self.base_path / self.config["mlflow"]["model_info_path"],
-            artifact_location=self.base_path / self.config["mlflow"]["artifact_location"],
+            mlrun_path=self.project_root / self.config["mlflow"]["mlrun_path"],
+            backend_store_uri=self.project_root / self.config["mlflow"]["backend_store_uri"],
+            model_info_path=self.project_root / self.config["mlflow"]["model_info_path"],
+            artifact_location=self.project_root / self.config["mlflow"]["artifact_location"],
             server_config=self.config["mlflow"]["server_config"]
         )
         
@@ -83,7 +84,26 @@ class Config:
         
         # 필요한 디렉토리 생성
         self._create_directories()
+    
+    def _find_project_root(self) -> Path:
+        """프로젝트 루트 디렉토리 찾기
         
+        'src' 디렉토리나 'config/config.yaml' 파일이 있는 위치를 프로젝트 루트로 간주
+        """
+        current_dir = Path(__file__).resolve().parent
+        
+        # 상위 디렉토리로 이동하면서 프로젝트 루트 찾기
+        while current_dir.name:
+            if (current_dir / 'src').exists() or (current_dir / 'config' / 'config.yaml').exists():
+                return current_dir
+            current_dir = current_dir.parent
+            
+        # 프로젝트 루트를 찾지 못한 경우
+        raise RuntimeError(
+            "Project root directory not found. "
+            "Please make sure you have 'src' directory or 'config/config.yaml' in your project root."
+        )
+    
     def _create_directories(self):
         """필요한 디렉토리 생성"""
         # 모든 기본 경로 생성
@@ -97,6 +117,7 @@ class Config:
         Path(self.mlflow.model_info_path).parent.mkdir(parents=True, exist_ok=True)
         
         print(f"\nDebug: Directories initialized:")
+        print(f"\nDebug: Project root: {self.project_root}")
         print(f"\nDebug: Data paths:")
         print(f"  - Raw data: {self.paths['raw_data']}")
         print(f"  - Processed data: {self.paths['processed_data']}")
@@ -115,14 +136,10 @@ class Config:
         print(f"  - Model info: {self.mlflow.model_info_path}")
 
     def _load_config(self) -> Dict[str, Any]:
-        # Get the absolute path of the project root directory
-        project_root = Path(__file__).parent.parent
-        
-        # Construct absolute path to config.yaml
-        self.config_path = project_root / self.config_path
-        print(f"Debug: Config path: {self.config_path}")
-        
         """YAML 설정 파일 로드"""
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {self.config_path}")
+            
         with open(self.config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
     

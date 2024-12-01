@@ -15,7 +15,7 @@ mlflow:
 project:
   random_state: 42
   dataset_name: "nsmc"
-  model_name: "KcBERT"
+  model_name: "KcELECTRA"
 
 # 데이터 설정
 dataset:
