@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import torch
-from src.utils.config import Config
+from src.config import Config
 from src.utils.mlflow_utils import MLflowModelManager
 from transformers import AutoTokenizer
 

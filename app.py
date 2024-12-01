@@ -1,5 +1,5 @@
 import streamlit as st
-from src.utils.config import Config
+from src.config import Config
 from src.utils.mlflow_utils import MLflowModelManager
 from transformers import AutoTokenizer
 import torch

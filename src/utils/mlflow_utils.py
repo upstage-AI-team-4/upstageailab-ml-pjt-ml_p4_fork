@@ -194,7 +194,7 @@ class MLflowModelManager:
                 if model_info.get('version') == version:
                     model_info['stage'] = "Production"
                     
-            # 변경된 정보 저장
+            # 변경된 ��보 저장
             with open(self.model_info_path, 'w', encoding='utf-8') as f:
                 json.dump(model_infos, f, indent=2, ensure_ascii=False)
             
