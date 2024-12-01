@@ -115,6 +115,13 @@ class Config:
         print(f"  - Model info: {self.mlflow.model_info_path}")
 
     def _load_config(self) -> Dict[str, Any]:
+        # Get the absolute path of the project root directory
+        project_root = Path(__file__).parent.parent
+        
+        # Construct absolute path to config.yaml
+        self.config_path = project_root / self.config_path
+        print(f"Debug: Config path: {self.config_path}")
+        
         """YAML 설정 파일 로드"""
         with open(self.config_path, 'r', encoding='utf-8') as f:
             return yaml.safe_load(f)
