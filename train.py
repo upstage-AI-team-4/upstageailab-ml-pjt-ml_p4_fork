@@ -158,12 +158,28 @@ def train(config):
                 print(f"Debug: Run ID: {run.info.run_id}")
                 print(f"Debug: Experiment ID: {run.info.experiment_id}")
                 
-                # 모델 저장
+                # MLflow 포맷으로 모델 저장
                 mlflow.pytorch.save_model(
                     pytorch_model=model,
                     path=str(model_path)
                 )
-                print("Debug: Model saved successfully")
+                print("Debug: Model saved in MLflow format")
+                
+                # 커스텀 포맷으로 모델 저장 (model.pt, config.json)
+                torch.save(model.state_dict(), model_path / "model.pt")
+                
+                # 설정 저장
+                model_config = {
+                    "model_type": config.project['model_name'],
+                    "pretrained_model": config.model_config['pretrained_model'],
+                    "num_labels": config.training_config['num_labels'],
+                    "max_length": config.training_config['max_length']
+                }
+                
+                with open(model_path / "config.json", 'w', encoding='utf-8') as f:
+                    json.dump(model_config, f, indent=2, ensure_ascii=False)
+                    
+                print("Debug: Model saved in custom format (model.pt and config.json)")
                 
                 # MLflow에 모델 경로 기록
                 mlflow.log_param("model_path", str(model_path))

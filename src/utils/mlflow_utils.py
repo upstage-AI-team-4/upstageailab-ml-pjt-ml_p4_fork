@@ -172,6 +172,13 @@ class MLflowModelManager:
                         stage="Archived"
                     )
                     print(f"Archived previous production model: version {v.version}")
+                    
+                    # model_registry.json에서도 해당 모델의 스테이지를 Archived로 변경
+                    model_infos = self.load_model_info()
+                    for model_info in model_infos:
+                        if (model_info.get('version') == v.version and 
+                            model_info.get('stage') == "Production"):
+                            model_info['stage'] = "Archived"
             
             # 새 모델을 Production으로 승격
             self.client.transition_model_version_stage(
@@ -180,6 +187,16 @@ class MLflowModelManager:
                 stage="Production"
             )
             print(f"Model {model_name} version {version} promoted to Production")
+            
+            # model_registry.json에서도 해당 모델의 스테이지를 Production으로 변경
+            model_infos = self.load_model_info()
+            for model_info in model_infos:
+                if model_info.get('version') == version:
+                    model_info['stage'] = "Production"
+                    
+            # 변경된 정보 저장
+            with open(self.model_info_path, 'w', encoding='utf-8') as f:
+                json.dump(model_infos, f, indent=2, ensure_ascii=False)
             
         except Exception as e:
             print(f"Error promoting model to production: {str(e)}")

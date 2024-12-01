@@ -7,18 +7,18 @@ import torch
 from PIL import Image
 import io
 
-def plot_confusion_matrix(dataset, model, tokenizer, labels=['부정', '긍정'], normalize=True):
-    """모델의 예측 결과로 Confusion Matrix 생성
+def plot_confusion_matrix(dataset, model, tokenizer, labels=['Negative', 'Positive'], normalize=True):
+    """Generate Confusion Matrix from model predictions
     
     Args:
-        dataset: 평가할 데이터셋
-        model: 평가할 모델
-        tokenizer: 토크나이저
-        labels: 레이블 이름
-        normalize: 정규화 여부
+        dataset: Dataset to evaluate
+        model: Model to evaluate
+        tokenizer: Tokenizer
+        labels: Label names
+        normalize: Whether to normalize values
     
     Returns:
-        PIL Image 객체
+        PIL Image object
     """
     model.eval()
     y_true = []
@@ -39,14 +39,14 @@ def plot_confusion_matrix(dataset, model, tokenizer, labels=['부정', '긍정']
             y_true.append(sample['labels'].item())
             y_pred.append(pred_label)
     
-    # 이미지를 메모리에 저장
+    # Save image to memory
     buf = io.BytesIO()
     
     cm = confusion_matrix(y_true, y_pred, normalize='true' if normalize else None)
     
     plt.figure(figsize=(10, 8))
     
-    # 일반적으로 많이 사용되는 Blues 색상맵 사용
+    # Use 'Blues' colormap for better visibility
     sns.heatmap(
         cm,
         annot=True,
@@ -63,9 +63,13 @@ def plot_confusion_matrix(dataset, model, tokenizer, labels=['부정', '긍정']
     plt.ylabel('True Label', fontsize=12, labelpad=10)
     plt.xlabel('Predicted Label', fontsize=12, labelpad=10)
     
+    # Set font properties for better visibility
+    plt.rcParams['font.family'] = 'DejaVu Sans'
+    plt.rcParams['font.size'] = 12
+    
     plt.tight_layout()
     
-    # 이미지를 메모리에 저장하고 PIL Image로 변환
+    # Save image to memory and convert to PIL Image
     plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
     plt.close()
     

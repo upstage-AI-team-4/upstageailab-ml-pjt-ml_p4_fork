@@ -10,16 +10,45 @@ import torch
 import mlflow
 
 @dataclass
+class MLflowConfig:
+    """MLflow 관련 설정"""
+    tracking_uri: str
+    experiment_name: str
+    model_registry_metric_threshold: float
+    mlrun_path: str
+    backend_store_uri: str
+    model_info_path: str
+    artifact_location: str
+    server_config: Dict[str, Any]
+
+@dataclass
 class Config:
     def __init__(self, config_path: str = "config/config.yaml"):
-        """설정 파일 로드 및 초기화"""
-        # 기본 경로 설정
-        self.base_path = Path.cwd()
-        self.config_path = self.base_path / config_path
+        """설정 초기화
         
-        # 설정 파일 로드
+        Args:
+            config_path: 설정 파일 경로
+        """
+        self.base_path = Path(os.getcwd())
+        self.config_path = Path(config_path)
+        
+        if not self.config_path.exists():
+            raise FileNotFoundError(f"Config file not found: {config_path}")
+            
         with open(self.config_path, 'r', encoding='utf-8') as f:
-            self.config = yaml.safe_load(f)
+            self._config = yaml.safe_load(f)
+            
+        # MLflow 설정
+        self.mlflow = MLflowConfig(
+            tracking_uri=self._config['mlflow']['tracking_uri'],
+            experiment_name=self._config['mlflow']['experiment_name'],
+            model_registry_metric_threshold=self._config['mlflow']['model_registry_metric_threshold'],
+            mlrun_path=self._config['mlflow']['mlrun_path'],
+            backend_store_uri=self._config['mlflow']['backend_store_uri'],
+            model_info_path=str(self.base_path / self._config['mlflow']['model_info_path']),
+            artifact_location=self._config['mlflow']['artifact_location'],
+            server_config=self._config['mlflow']['server_config']
+        )
         
         # 기본 경로 구조 설정
         self.paths = {
@@ -37,13 +66,8 @@ class Config:
         for path in self.paths.values():
             path.mkdir(parents=True, exist_ok=True)
         
-        # MLflow 설정에 base_path 적용
-        self.mlflow = self.config['mlflow']
-        self.mlflow['mlrun_path'] = self.base_path / self.mlflow['mlrun_path']
-        self.mlflow['model_info_path'] = self.base_path / self.mlflow['model_info_path']
-        
         # 공통 설정
-        self.common = self.config['common']
+        self.common = self._config['common']
         self.common['trainer']['logger']['save_dir'] = str(self.paths['logs'])
         self.common['trainer']['default_root_dir'] = str(self.paths['logs'])
         
@@ -52,10 +76,10 @@ class Config:
         self.checkpoint['dirpath'] = self.base_path / self.checkpoint['dirpath']
         
         # 프로젝트 설정
-        self.project = self.config['project']
+        self.project = self._config['project']
         
         # 데이터 설정
-        self.data = self.config['dataset'][self.project['dataset_name']]
+        self.data = self._config['dataset'][self.project['dataset_name']]
         
         # 모이터셋별 경로 설정
         dataset_name = self.data['dataset_name']
@@ -67,7 +91,7 @@ class Config:
         self.data['val_data_path'] = str(self.paths['dataset'] / self.data['val_data_path'])
         
         # 모델 설정
-        self.model_config = self.config['models'][self.project['model_name']]
+        self.model_config = self._config['models'][self.project['model_name']]
         self.training_config = self.model_config['training']
     
     def get_model_kwargs(self):
