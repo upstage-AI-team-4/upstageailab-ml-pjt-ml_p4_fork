@@ -1,8 +1,23 @@
 import os
 import yaml
 from pathlib import Path
-from types import SimpleNamespace
-from typing import Dict, Any
+from dataclasses import dataclass
+from typing import Dict, Any, Optional
+from pytorch_lightning.callbacks import ModelCheckpoint
+from pytorch_lightning.loggers import TensorBoardLogger
+import torch
+
+@dataclass
+class MLflowConfig:
+    """MLflow 관련 설정"""
+    tracking_uri: str
+    experiment_name: str
+    model_registry_metric_threshold: float
+    mlrun_path: Path
+    backend_store_uri: Path
+    model_info_path: Path
+    artifact_location: Path
+    server_config: Dict[str, Any]
 
 class Config:
     def __init__(self, config_path="config/config.yaml"):
@@ -35,8 +50,8 @@ class Config:
             'model_checkpoints': self.base_path / 'checkpoints' / self.project['model_name'],
         }
         
-        # MLflow 관련 경로 설정
-        self.mlflow = SimpleNamespace(
+        # MLflow 관련 설정
+        self.mlflow = MLflowConfig(
             tracking_uri=self.config["mlflow"]["tracking_uri"],
             experiment_name=self.config["mlflow"]["experiment_name"],
             model_registry_metric_threshold=self.config["mlflow"]["model_registry_metric_threshold"],
@@ -79,6 +94,7 @@ class Config:
         self.mlflow.mlrun_path.mkdir(parents=True, exist_ok=True)
         self.mlflow.backend_store_uri.mkdir(parents=True, exist_ok=True)
         self.mlflow.artifact_location.mkdir(parents=True, exist_ok=True)
+        Path(self.mlflow.model_info_path).parent.mkdir(parents=True, exist_ok=True)
         
         print(f"\nDebug: Directories initialized:")
         print(f"\nDebug: Data paths:")
@@ -139,9 +155,32 @@ class Config:
             "test_size": self.data["test_size"]
         }
     
-    def get_trainer_config(self) -> Dict[str, Any]:
-        """Trainer 설정 반환"""
-        return self.common["trainer"]
+    def get_trainer_kwargs(self) -> Dict[str, Any]:
+        """Trainer 초기화에 필요한 인자들을 반환"""
+        trainer_config = self.common['trainer'].copy()
+        
+        # Logger 설정
+        logger_config = trainer_config.pop('logger', {})
+        logger = TensorBoardLogger(
+            save_dir=logger_config['save_dir'],
+            name=logger_config['name'],
+            version=logger_config['version']
+        )
+        
+        # CUDA 사용 가능 여부 확인
+        if trainer_config['accelerator'] == 'gpu' and not torch.cuda.is_available():
+            print("Warning: GPU requested but CUDA is not available. Falling back to CPU.")
+            trainer_config['accelerator'] = 'cpu'
+        
+        return {
+            "max_epochs": self.training_config['epochs'],
+            "precision": self.training_config['precision'],
+            **trainer_config,
+            "logger": logger,
+            "callbacks": [
+                ModelCheckpoint(**self.checkpoint)
+            ]
+        }
     
     def get_hpo_config(self) -> Dict[str, Any]:
         """HPO 설정 반환"""

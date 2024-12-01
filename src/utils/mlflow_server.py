@@ -1,7 +1,7 @@
 import os
 from pathlib import Path
 import subprocess
-from src.utils.config import Config
+from src.config import Config
 
 def start_mlflow_server(config: Config):
     """MLflow 서버 시작"""

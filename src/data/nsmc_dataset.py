@@ -9,7 +9,7 @@ from typing import Dict, Optional, Any, Tuple
 from transformers import PreTrainedTokenizerBase
 import torch
 import requests
-from src.utils.config import Config
+from src.config import Config
 from .text_utils import clean_text
 
 def download_nsmc(config):
