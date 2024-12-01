@@ -1,57 +1,109 @@
 import torch
-from typing import List, Dict, Union
+from typing import List, Dict, Union, Any
 from pathlib import Path
 
 class ModelInferencer:
-    def __init__(self, model, tokenizer, device='cuda' if torch.cuda.is_available() else 'cpu'):
+    def __init__(self, model, tokenizer):
+        """모델 추론기 초기화
+        
+        Args:
+            model: 학습된 모델
+            tokenizer: 토크나이저
+        """
         self.model = model
         self.tokenizer = tokenizer
-        self.device = device
-        self.model.to(device)
-        self.model.eval()
-    
-    def predict(self, texts: Union[str, List[str]], batch_size: int = 32) -> List[Dict]:
-        """텍스트 또는 텍스트 리스트에 대한 예측 수행"""
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = self.model.to(self.device)
+        
+    def predict(self, texts: Union[str, List[str]]) -> List[Dict[str, Any]]:
+        """텍스트 감정 분석
+        
+        Args:
+            texts: 분석할 텍스트 또는 텍스트 리스트
+            
+        Returns:
+            List[Dict]: 예측 결과 리스트 (prediction, confidence)
+            
+        Raises:
+            ValueError: 입력 텍스트가 비어있는 경우
+            RuntimeError: 모델 추론 중 오류 발생
+        """
+        if not texts:
+            raise ValueError("Input texts cannot be empty")
+            
+        # 단일 텍스트를 리스트로 변환
         if isinstance(texts, str):
             texts = [texts]
-        
+            
+        # 배치 크기로 나누어 처리
+        batch_size = 32
         results = []
-        for i in range(0, len(texts), batch_size):
-            batch_texts = texts[i:i + batch_size]
-            batch_results = self._predict_batch(batch_texts)
-            results.extend(batch_results)
         
+        try:
+            for i in range(0, len(texts), batch_size):
+                batch_texts = texts[i:i + batch_size]
+                batch_results = self._predict_batch(batch_texts)
+                results.extend(batch_results)
+        except Exception as e:
+            raise RuntimeError(f"Error during model inference: {str(e)}")
+            
         return results
     
-    def _predict_batch(self, texts: List[str]) -> List[Dict]:
-        """배치 단위 예측"""
-        # 토크나이징
-        inputs = self.tokenizer(
-            texts,
-            padding=True,
-            truncation=True,
-            return_tensors='pt'
-        )
+    def _predict_batch(self, batch_texts: List[str]) -> List[Dict[str, Any]]:
+        """배치 단위 예측
         
-        # GPU로 이동
+        Args:
+            batch_texts: 배치 텍스트 리스트
+            
+        Returns:
+            List[Dict]: 예측 결과 리스트
+        """
+        # 모델을 평가 모드로 설정
+        self.model.eval()
+        
+        # 텍스트 전처리
+        try:
+            inputs = self.tokenizer(
+                batch_texts,
+                padding=True,
+                truncation=True,
+                max_length=512,
+                return_tensors="pt"
+            )
+        except Exception as e:
+            raise RuntimeError(f"Error during tokenization: {str(e)}")
+        
+        # token_type_ids 처리
+        try:
+            import inspect
+            forward_params = inspect.signature(self.model.forward).parameters
+            if 'token_type_ids' not in forward_params and 'token_type_ids' in inputs:
+                del inputs['token_type_ids']
+        except Exception as e:
+            print(f"Warning: Error checking model signature: {e}")
+            if 'token_type_ids' in inputs:
+                del inputs['token_type_ids']
+        
+        # 입력을 현재 디바이스로 이동
         inputs = {k: v.to(self.device) for k, v in inputs.items()}
         
         # 예측
-        with torch.no_grad():
-            outputs = self.model(**inputs)
-            logits = outputs.logits
-            probs = torch.softmax(logits, dim=-1)
-            predictions = torch.argmax(logits, dim=-1)
-            confidences = torch.max(probs, dim=-1)[0]
+        try:
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                logits = outputs.logits
+                probs = torch.softmax(logits, dim=-1)
+                predictions = torch.argmax(logits, dim=-1)
+                confidences = torch.max(probs, dim=-1).values
+        except Exception as e:
+            raise RuntimeError(f"Error during model inference: {str(e)}")
         
-        # 결과 정리
+        # 결과 변환
         results = []
-        for text, pred, conf, prob in zip(texts, predictions, confidences, probs):
+        for pred, conf in zip(predictions.cpu().numpy(), confidences.cpu().numpy()):
             results.append({
-                'text': text,
-                'prediction': pred.item(),
-                'confidence': conf.item(),
-                'probabilities': prob.cpu().numpy().tolist()
+                "prediction": int(pred),
+                "confidence": float(conf)
             })
         
         return results 

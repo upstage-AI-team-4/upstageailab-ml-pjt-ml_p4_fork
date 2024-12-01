@@ -3,42 +3,73 @@ import matplotlib.pyplot as plt
 from sklearn.metrics import confusion_matrix
 import tempfile
 import os
+import torch
+from PIL import Image
+import io
 
-def plot_confusion_matrix(y_true, y_pred, labels=['Negative', 'Positive'], normalize=False, log_path=None):
-    """Confusion matrix 생성 및 저장
+def plot_confusion_matrix(dataset, model, tokenizer, labels=['부정', '긍정'], normalize=True):
+    """모델의 예측 결과로 Confusion Matrix 생성
     
     Args:
-        y_true: 실제 레이블
-        y_pred: 예측 레이블
+        dataset: 평가할 데이터셋
+        model: 평가할 모델
+        tokenizer: 토크나이저
         labels: 레이블 이름
         normalize: 정규화 여부
-        log_path: 저장 경로 (None이면 임시 파일로 저장)
-        
+    
     Returns:
-        저장된 파일 경로
+        PIL Image 객체
     """
+    model.eval()
+    y_true = []
+    y_pred = []
+    
+    with torch.no_grad():
+        for i in range(len(dataset)):
+            sample = dataset[i]
+            inputs = {
+                'input_ids': sample['input_ids'].unsqueeze(0).to(model.device),
+                'attention_mask': sample['attention_mask'].unsqueeze(0).to(model.device)
+            }
+            
+            outputs = model(**inputs)
+            logits = outputs.logits
+            pred_label = torch.argmax(logits, dim=-1).item()
+            
+            y_true.append(sample['labels'].item())
+            y_pred.append(pred_label)
+    
+    # 이미지를 메모리에 저장
+    buf = io.BytesIO()
+    
     cm = confusion_matrix(y_true, y_pred, normalize='true' if normalize else None)
     
-    sns.set_style("whitegrid")
-    plt.figure(figsize=(8, 6))
+    plt.figure(figsize=(10, 8))
     
-    cmap = sns.color_palette("coolwarm", as_cmap=True)
+    # 일반적으로 많이 사용되는 Blues 색상맵 사용
+    sns.heatmap(
+        cm,
+        annot=True,
+        fmt='.2%' if normalize else 'd',
+        cmap='Blues',
+        xticklabels=labels,
+        yticklabels=labels,
+        cbar=True,
+        square=True
+    )
     
-    sns.heatmap(cm, annot=True, fmt='.2f' if normalize else 'd', cmap=cmap,
-                xticklabels=labels, yticklabels=labels, cbar=False)
-    
-    plt.title('Confusion Matrix' + (' (Normalized)' if normalize else ''), fontsize=16, fontweight='bold')
-    plt.ylabel('True Label', fontsize=12)
-    plt.xlabel('Predicted Label', fontsize=12)
+    plt.title('Confusion Matrix' + (' (Normalized)' if normalize else ''),
+             fontsize=14, pad=20)
+    plt.ylabel('True Label', fontsize=12, labelpad=10)
+    plt.xlabel('Predicted Label', fontsize=12, labelpad=10)
     
     plt.tight_layout()
     
-    if log_path is None:
-        with tempfile.NamedTemporaryFile(suffix='.png', delete=False) as tmp:
-            plt.savefig(tmp.name)
-            plt.close()
-            return tmp.name
-    else:
-        plt.savefig(log_path)
-        plt.close()
-        return log_path
+    # 이미지를 메모리에 저장하고 PIL Image로 변환
+    plt.savefig(buf, format='png', dpi=300, bbox_inches='tight')
+    plt.close()
+    
+    buf.seek(0)
+    image = Image.open(buf)
+    
+    return image

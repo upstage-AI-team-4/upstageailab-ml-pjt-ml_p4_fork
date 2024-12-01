@@ -77,34 +77,34 @@ class ModelEvaluator:
         
         return {'confidence_bins': bins}
     
-    def _get_sample_predictions(self, dataset, n_samples: int) -> List[Dict]:
-        """랜덤 샘플에 대한 예측 수행"""
+    def _get_sample_predictions(self, dataset, n_samples=5):
+        """샘플 데이터에 대한 예측 결과 반환"""
         indices = torch.randperm(len(dataset))[:n_samples].tolist()
-        samples = []
+        predictions = []
         
-        for idx in indices:
-            sample = dataset[idx]
-            text = dataset.documents[idx]
-            true_label = dataset.labels[idx]
-            
-            inputs = {
-                'input_ids': sample['input_ids'].unsqueeze(0).to(self.device),
-                'attention_mask': sample['attention_mask'].unsqueeze(0).to(self.device)
-            }
-            
-            with torch.no_grad():
+        self.model.eval()
+        with torch.no_grad():
+            for idx in indices:
+                text = dataset.texts[idx]
+                true_label = dataset.labels[idx]
+                
+                sample = dataset[idx]
+                inputs = {
+                    'input_ids': sample['input_ids'].unsqueeze(0).to(self.model.device),
+                    'attention_mask': sample['attention_mask'].unsqueeze(0).to(self.model.device)
+                }
+                
                 outputs = self.model(**inputs)
                 logits = outputs.logits
                 probs = torch.softmax(logits, dim=-1)
                 pred_label = torch.argmax(logits, dim=-1).item()
                 confidence = probs[0][pred_label].item()
-            
-            samples.append({
-                'text': text,
-                'true_label': true_label,
-                'predicted_label': pred_label,
-                'confidence': confidence,
-                'correct': pred_label == true_label
-            })
+                
+                predictions.append({
+                    'text': text,
+                    'true_label': true_label,
+                    'predicted_label': pred_label,
+                    'confidence': confidence
+                })
         
-        return samples 
+        return predictions
