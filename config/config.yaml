@@ -21,7 +21,7 @@ project:
 dataset:
   nsmc:
     dataset_name: "nsmc"
-    sampling_rate: 0.01
+    sampling_rate: 0.001
     test_size: 0.2
     train_data_path: "ratings_train.txt"
     val_data_path: "ratings_test.txt"

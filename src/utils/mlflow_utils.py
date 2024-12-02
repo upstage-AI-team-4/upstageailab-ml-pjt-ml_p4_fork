@@ -10,7 +10,7 @@ import mlflow
 import shutil
 from mlflow.tracking import MlflowClient
 from mlflow.entities.model_registry import ModelVersion
-from src.config import Config
+from src.utils.config import Config
 
 class ModelStage(Enum):
     """모델 스테이지 정의"""
