@@ -1,0 +1,31 @@
+{
+  "KcBERT": [
+    {
+      "model_name": "KcBERT",
+      "version": "1",
+      "metrics": {
+        "val_f1": 0.40602442333785616
+      },
+      "params": {
+        "pretrained_model": "beomi/kcbert-base",
+        "num_labels": 2,
+        "learning_rate": 5e-06,
+        "num_train_epochs": 1,
+        "per_device_train_batch_size": 32,
+        "per_device_eval_batch_size": 32,
+        "max_length": 150,
+        "report_cycle": 100,
+        "optimizer": "AdamW",
+        "lr_scheduler": "exp",
+        "precision": 16,
+        "num_unfreeze_layers": -1,
+        "accumulate_grad_batches": 2
+      },
+      "run_id": "aa1e104e448244e794bed8ab1189b243",
+      "run_name": "KcBERT_nsmc",
+      "timestamp": "2024-12-02T15:43:12.171729",
+      "experiment_id": "143593645400582570",
+      "stage": "Production"
+    }
+  ]
+}

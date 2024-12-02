@@ -87,49 +87,206 @@ def setup_mlflow_server(config: Config):
 
 def initialize_mlflow(config: Config) -> str:
     """MLflow 초기화 및 설정"""
-    # MLflow 실험 설정
-    experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
-    
-    # 아티팩트 경로 설정
-    artifact_location = os.path.abspath(str(config.project_root / config.mlflow.artifact_location))
-    print(f"Debug: Setting artifact location to: {artifact_location}")
-    
-    if experiment is None:
-        experiment_id = mlflow.create_experiment(
-            name=config.mlflow.experiment_name,
-            artifact_location=f"file://{artifact_location}"
-        )
-        print(f"Debug: Created new experiment with ID: {experiment_id}")
-    else:
-        experiment_id = experiment.experiment_id
-        print(f"Debug: Using existing experiment with ID: {experiment_id}")
-        print(f"Debug: Current artifact location: {experiment.artifact_location}")
-    
-    mlflow.set_experiment(config.mlflow.experiment_name)
-    return experiment_id
+    try:
+        print("\nInitializing MLflow...")
+        
+        # 환경 변수 설정
+        os.environ["MLFLOW_TRACKING_URI"] = config.mlflow.tracking_uri
+        os.environ["MLFLOW_ALLOW_FILE_URI_AS_MODEL_VERSION_SOURCE"] = "true"
+        os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
+        
+        # MLflow 기본 디렉토리 설정
+        mlruns_dir = Path(config.project_root) / config.mlflow.mlrun_path
+        mlruns_dir.mkdir(parents=True, exist_ok=True)
+        
+        # 아티팩트 저장 디렉토리 설정
+        artifacts_dir = Path(config.project_root) / config.mlflow.artifact_location
+        artifacts_dir.mkdir(parents=True, exist_ok=True)
+        
+        # MLflow 설정
+        mlflow.set_tracking_uri(config.mlflow.tracking_uri)
+        print(f"Debug: MLflow tracking URI: {config.mlflow.tracking_uri}")
+        
+        # 실험 생성 또는 가져오기
+        experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
+        
+        if experiment is None:
+            # 새 실험 생성
+            experiment_id = mlflow.create_experiment(
+                name=config.mlflow.experiment_name,
+                artifact_location=str(artifacts_dir / config.mlflow.experiment_name)
+            )
+            print(f"Debug: Created new experiment with ID: {experiment_id}")
+        else:
+            experiment_id = experiment.experiment_id
+            print(f"Debug: Using existing experiment with ID: {experiment_id}")
+        
+        # 현재 실험 설정
+        mlflow.set_experiment(config.mlflow.experiment_name)
+        print(f"Debug: Set active experiment to: {config.mlflow.experiment_name}")
+        
+        return experiment_id
+        
+    except Exception as e:
+        print(f"Error initializing MLflow: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        raise
 
 class MLflowModelManager:
     def __init__(self, config):
         self.config = config
-        self.model_registry_path = config.mlflow.model_info_path
+        self.model_info_path = Path(config.mlflow.model_info_path)
         
-        # MLflow 기본 설정
-        tracking_uri = config.mlflow.tracking_uri
-        mlflow.set_tracking_uri(tracking_uri)
-        os.environ['MLFLOW_TRACKING_URI'] = tracking_uri
-        print(f"Debug: MLflow tracking URI: {tracking_uri}")
+        # 모델 레지스트리 디렉토리가 없으면 생성
+        self.model_info_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # 아티팩트 저장 경로 설정
-        self.artifact_location = os.path.abspath(str(config.project_root / config.mlflow.artifact_location))
-        os.environ['MLFLOW_ARTIFACT_ROOT'] = self.artifact_location
-        print(f"Debug: MLflow artifact root: {self.artifact_location}")
-        
-        # 실험 설정
-        self.experiment_name = config.mlflow.experiment_name
+        # MLflow 초기화
         self.experiment_id = initialize_mlflow(config)
         
         # MLflow 클라이언트 초기화
-        self.client = mlflow.tracking.MlflowClient(tracking_uri=tracking_uri)
+        self.tracking_uri = config.mlflow.tracking_uri
+        mlflow.set_tracking_uri(self.tracking_uri)
+        self.client = mlflow.tracking.MlflowClient(tracking_uri=self.tracking_uri)
+        
+        print(f"Debug: MLflow tracking URI: {self.tracking_uri}")
+        print(f"Debug: Model info path: {self.model_info_path}")
+        print(f"Debug: Experiment ID: {self.experiment_id}")
+    
+    def load_model_info(self) -> Dict[str, Any]:
+        """모델 정보 로드"""
+        try:
+            if self.model_info_path.exists():
+                with open(self.model_info_path, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            print(f"Error loading model info: {str(e)}")
+            return {}
+    
+    def save_model_info(
+        self,
+        run_id: str,
+        metrics: Dict[str, float],
+        params: Dict[str, Any] = None,
+        version: str = None,
+        model_name: str = None,
+        run_name: str = None
+    ) -> None:
+        """모델 정보 저장"""
+        try:
+            print(f"\nSaving model info to {self.model_info_path}...")
+            
+            # 기본값 설정
+            model_name = model_name or self.config.project['model_name']
+            run_name = run_name or f"{model_name}_{self.config.project['dataset_name']}"
+            
+            # Path 객체를 문자열로 변환
+            if params:
+                serializable_params = {k: str(v) if isinstance(v, Path) else v for k, v in params.items()}
+            else:
+                serializable_params = {}
+            
+            # 기존 정보 로드
+            model_info = self.load_model_info()
+            
+            # 성능 지표 확인
+            main_metric = next(iter(metrics.values()))  # 첫 번째 지표 사용
+            initial_stage = "None"
+            
+            # 새로운 모델 정보
+            new_model_info = {
+                "model_name": model_name,
+                "version": version,
+                "metrics": metrics,
+                "params": serializable_params,
+                "run_id": run_id,
+                "run_name": run_name,
+                "timestamp": datetime.now().isoformat(),
+                "experiment_id": self.experiment_id,
+                "stage": initial_stage
+            }
+            
+            # 모델별 정보 업데이트
+            if model_name not in model_info:
+                model_info[model_name] = []
+            model_info[model_name].append(new_model_info)
+            
+            # 정보 저장
+            self.model_info_path.parent.mkdir(parents=True, exist_ok=True)
+            print(f"Debug: Saving model info to: {self.model_info_path}")
+            print(f"Debug: Model info content: {new_model_info}")
+            
+            with open(self.model_info_path, "w", encoding="utf-8") as f:
+                json.dump(model_info, f, indent=2, ensure_ascii=False)
+            
+            print(f"Debug: Successfully saved model info")
+            
+            # 성능 지표가 threshold를 넘으면 자동으로 Staging으로 승격
+            if main_metric >= self.config.mlflow.model_registry_metric_threshold:
+                print(f"Model performance ({main_metric:.4f}) exceeds threshold ({self.config.mlflow.model_registry_metric_threshold})")
+                self.promote_to_staging(model_name, version)
+            
+        except Exception as e:
+            print(f"Error saving model info: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
+    
+    def register_model(self, model_name: str, run_id: str) -> ModelVersion:
+        """모델을 MLflow 모델 레지스트리에 등록"""
+        try:
+            print(f"\nRegistering model {model_name} from run {run_id}...")
+            
+            # 환경 변수 재설정 (안전을 위해)
+            os.environ["MLFLOW_ALLOW_FILE_URI_AS_MODEL_VERSION_SOURCE"] = "true"
+            
+            # 실제 모델 경로 구성
+            mlruns_dir = Path(self.config.project_root) / self.config.mlflow.mlrun_path
+            model_path = mlruns_dir / str(self.experiment_id) / run_id / "artifacts/model"
+            
+            print(f"Debug: Looking for model at: {model_path}")
+            
+            # 모델이 존재하는지 확인
+            if not model_path.exists():
+                print(f"Warning: Model not found at primary location: {model_path}")
+                # 대체 경로 확인 (artifacts 디렉토리)
+                artifacts_dir = Path(self.config.project_root) / self.config.mlflow.artifact_location
+                alt_model_path = artifacts_dir / str(self.experiment_id) / run_id / "artifacts/model"
+                
+                if alt_model_path.exists():
+                    model_path = alt_model_path
+                    print(f"Debug: Found model at alternate location: {model_path}")
+                else:
+                    raise FileNotFoundError(f"Model not found at either location: {model_path} or {alt_model_path}")
+            
+            # 모델 등록 시도
+            try:
+                # 먼저 runs:/ 형식으로 시도
+                model_uri = f"runs:/{run_id}/model"
+                print(f"Debug: Attempting to register model using runs URI: {model_uri}")
+                model_version = mlflow.register_model(model_uri=model_uri, name=model_name)
+            except Exception as e1:
+                print(f"Warning: Failed to register model using runs URI: {e1}")
+                try:
+                    # file:// 형식으로 시도
+                    model_uri = f"file://{str(model_path)}"
+                    print(f"Debug: Attempting to register model using file URI: {model_uri}")
+                    model_version = mlflow.register_model(model_uri=model_uri, name=model_name)
+                except Exception as e2:
+                    print(f"Warning: Failed to register model using file URI: {e2}")
+                    # 마지막으로 직접 경로 시도
+                    print(f"Debug: Attempting to register model using direct path: {model_path}")
+                    model_version = mlflow.register_model(model_uri=str(model_path), name=model_name)
+            
+            print(f"Debug: Successfully registered model version: {model_version.version}")
+            return model_version
+            
+        except Exception as e:
+            print(f"Error registering model: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     def log_config_params(self, run_id: str):
         """Log important configuration parameters"""
@@ -199,33 +356,33 @@ class MLflowModelManager:
             print(f"Error loading production model: {str(e)}")
             return None
     
-    def register_model(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
-        """MLflow에 모델을 등록하고 버전 정보를 반환"""
-        # MLflow에 모델 등록
-        model_uri = f"runs:/{run_id}/{model_uri}"
+    def promote_to_staging(self, model_name: str, version: str) -> None:
+        """모델을 Staging 단계로 승격"""
         try:
-            model_version = mlflow.register_model(model_uri, model_name)
-            print(f"Registered model '{model_name}' version {model_version.version}")
+            # MLflow에서 스테이지 변경
+            self.client.transition_model_version_stage(
+                name=model_name,
+                version=version,
+                stage="Staging"
+            )
             
-            # 모델 버전 정보 반환
-            return model_version
+            # 로컬 정보 업데이트
+            model_info = self.load_model_info()
+            if model_name in model_info:
+                for version_info in model_info[model_name]:
+                    if str(version_info['version']) == version:
+                        version_info['stage'] = "Staging"
+                        break
+                
+                # 변경사항 저장
+                with open(self.model_info_path, "w", encoding="utf-8") as f:
+                    json.dump(model_info, f, indent=2, ensure_ascii=False)
+            
+            print(f"Model {model_name} version {version} promoted to Staging")
             
         except Exception as e:
-            print(f"Error registering model: {str(e)}")
+            print(f"Error promoting model to staging: {str(e)}")
             raise
-    
-    def promote_to_staging(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
-        """모델을 Staging 단계로 승격"""
-        model_version = self.register_model(model_name, run_id, model_uri)
-        
-        self.client.transition_model_version_stage(
-            name=model_name,
-            version=model_version.version,
-            stage="Staging"
-        )
-        
-        print(f"Model: {model_name}, version: {model_version.version} promoted to Staging...")
-        return model_version
     
     def promote_to_production(self, model_name: str, version: str) -> None:
         """모델을 Production 단계로 승격"""
@@ -291,134 +448,144 @@ class MLflowModelManager:
             print(f"Error getting latest versions: {str(e)}")
             return []
     
-    def save_model_info(self, run_id: str, metrics: Dict[str, float], params: Dict[str, Any], version: str) -> None:
-        """모델 정보를 JSON 파일로 저장"""
-        try:
-            # Path 객체를 문자열로 변환
-            serializable_params = {k: str(v) if isinstance(v, Path) else v for k, v in params.items()}
-            
-            # experiment_id 가져오기
-            run = mlflow.get_run(run_id)
-            experiment_id = run.info.experiment_id
-            experiment_name = mlflow.get_experiment(experiment_id).name
-            
-            model_info = {
-                "experiment_name": experiment_name,
-                "experiment_id": experiment_id,
-                "run_id": run_id,
-                "run_name": f"{self.config.project['model_name']}_{self.config.project['dataset_name']}",
-                "metrics": metrics,
-                "params": serializable_params,
-                "stage": "Staging",
-                "version": version,
-                "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            }
-            
-            # 기존 정보 로드 및 업데이트
-            model_infos = self.load_model_info()
-            model_infos.append(model_info)
-            
-            # 파일 저장
-            self.model_info_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(self.model_info_path, 'w', encoding='utf-8') as f:
-                json.dump(model_infos, f, indent=2, ensure_ascii=False)
-                
-            print(f"Model info saved successfully to {self.model_info_path}")
-            
-        except Exception as e:
-            print(f"Error saving model info: {str(e)}")
-            raise
-    
-    def load_model_info(self) -> List[Dict]:
-        """저장된 모델 정보를 JSON 파일에서 로드"""
-        try:
-            if self.model_info_path.exists():
-                with open(self.model_info_path, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            return []
-        except Exception as e:
-            print(f"Error loading model info: {str(e)}")
-            return []
-    
     def display_models(self) -> None:
         """저장된 모델 정보를 테이블 형태로 출력"""
-        model_infos = self.load_model_info()
-        if not model_infos:
-            print("No models found in registry.")
-            return
-        
-        df = pd.DataFrame(model_infos)
-        display_columns = [
-            "experiment_name",
-            "run_name",
-            "run_id",
-            "metrics",
-            "stage",
-            "timestamp"
-        ]
-        df = df[display_columns]
-        
-        # metrics 컬럼을 보기 좋게 포맷팅
-        df['metrics'] = df['metrics'].apply(lambda x: {k: f"{v:.4f}" for k, v in x.items()})
-        
-        # 인덱스 이름 설정 및 1부터 시작하도록 변경
-        df.index = range(1, len(df) + 1)
-        df.index.name = 'model_index'
-        
-        print("\nRegistered Models:")
-        print(df.to_string())
+        try:
+            model_info = self.load_model_info()
+            if not model_info:
+                print("No models found in registry.")
+                return
+
+            # 모든 모델의 정보를 하나의 리스트로 변환
+            all_models = []
+            for model_name, versions in model_info.items():
+                for version_info in versions:
+                    # 메트릭스를 문자열로 변환
+                    metrics_str = ", ".join([f"{k}: {v:.4f}" for k, v in version_info.get("metrics", {}).items()])
+                    
+                    model_data = {
+                        "model_name": model_name,
+                        "version": version_info.get("version", "N/A"),
+                        "run_name": version_info.get("run_name", "N/A"),
+                        "metrics": metrics_str,
+                        "stage": version_info.get("stage", "None"),
+                        "timestamp": version_info.get("timestamp", "N/A")
+                    }
+                    all_models.append(model_data)
+
+            if not all_models:
+                print("No model versions found.")
+                return
+
+            # DataFrame 생성 및 표시
+            df = pd.DataFrame(all_models)
+            display_columns = ["model_name", "version", "run_name", "metrics", "stage", "timestamp"]
+            df = df[display_columns]
+            
+            print("\nRegistered Models:")
+            print(df.to_string(index=False))
+
+        except Exception as e:
+            print(f"Error displaying models: {str(e)}")
+            import traceback
+            traceback.print_exc()
     
     def manage_model(self, model_name: str) -> None:
-        """대화형으로 모델 스테이지를 관리"""
-        self.display_models()
-        
-        while True:
-            print("\n=== Model Management ===")
-            print("1. Promote model to Production")
-            print("2. Archive model")
-            print("3. Display models")
-            print("4. View model versions")
-            print("5. Exit")
+        """대델 버전 관리"""
+        try:
+            # 모델 정보 로드
+            model_info = self.load_model_info()
+            if model_name not in model_info:
+                print(f"No versions found for model {model_name}")
+                return
             
-            choice = input("\nEnter your choice (1-5): ")
+            # 모델 버전 표시
+            versions = model_info[model_name]
+            print(f"\nVersions for model {model_name}:")
+            for version in versions:
+                print(f"Version: {version['version']}, Stage: {version['stage']}")
             
-            if choice == '1':
-                version = input("Enter model version to promote: ")
-                try:
-                    self.promote_to_production(model_name, version)
-                    self.display_models()
-                except Exception as e:
-                    print(f"Error: {e}")
+            # 사용자 입력 받기
+            version_to_promote = input("\nEnter model version to promote: ")
             
-            elif choice == '2':
-                version = input("Enter model version to archive: ")
-                try:
-                    self.archive_model(model_name, version)
-                    self.display_models()
-                except Exception as e:
-                    print(f"Error: {e}")
+            # MLflow 클라이언트에서 모델 버전 정보 가져오기
+            try:
+                model_version = self.client.get_model_version(
+                    name=model_name,
+                    version=version_to_promote
+                )
+            except Exception as e:
+                print(f"Error getting model version from MLflow: {e}")
+                return
             
-            elif choice == '3':
-                self.display_models()
+            # 선택된 버전 찾기
+            selected_version = None
+            for version in versions:
+                if str(version['version']) == version_to_promote:
+                    selected_version = version
+                    break
             
-            elif choice == '4':
-                try:
-                    versions = self.client.search_model_versions(f"name='{model_name}'")
-                    print("\nAll model versions:")
-                    for v in versions:
-                        print(f"\nVersion: {v.version}")
-                        print(f"Stage: {v.current_stage}")
-                        print(f"Run ID: {v.run_id}")
-                        print(f"Status: {v.status}")
-                        print(f"Creation Time: {datetime.fromtimestamp(v.creation_timestamp/1000.0)}")
-                except Exception as e:
-                    print(f"Error viewing versions: {e}")
+            if not selected_version:
+                print(f"Version {version_to_promote} not found")
+                return
             
-            elif choice == '5':
-                break
+            # 현재 스테이지 확인
+            current_stage = selected_version['stage']
             
-            else:
-                print("Invalid choice. Please try again.")
+            if current_stage == "None":
+                print("Cannot promote model in 'None' stage. Model must be in 'Staging' stage first.")
+            elif current_stage == "Staging":
+                # MLflow에서 Production으로 승격
+                self.client.transition_model_version_stage(
+                    name=model_name,
+                    version=version_to_promote,
+                    stage="Production",
+                    archive_existing_versions=True  # 기존 Production 모델을 자동으로 Archive
+                )
+                
+                # 로컬 정보 업데이트
+                selected_version['stage'] = "Production"
+                print(f"Model {model_name} version {version_to_promote} promoted to Production")
+                
+                # 기존 Production 모델이 있다면 Archived로 변경
+                for other_version in versions:
+                    if other_version != selected_version and other_version['stage'] == "Production":
+                        other_version['stage'] = "Archived"
+                        print(f"Previous production model (version {other_version['version']}) archived")
+            
+            elif current_stage == "Production":
+                # Archive 옵션
+                action = input("Model is in Production. Enter 'archive' to archive it: ")
+                if action.lower() == 'archive':
+                    # MLflow에서 Archived로 변경
+                    self.client.transition_model_version_stage(
+                        name=model_name,
+                        version=version_to_promote,
+                        stage="Archived"
+                    )
+                    
+                    # 로컬 정보 업데이트
+                    selected_version['stage'] = "Archived"
+                    print(f"Model {model_name} version {version_to_promote} archived")
+            
+            # 변경사항 저장
+            with open(self.model_info_path, "w", encoding="utf-8") as f:
+                json.dump(model_info, f, indent=2, ensure_ascii=False)
+            
+            # MLflow 모델 버전 상태 확인
+            updated_version = self.client.get_model_version(
+                name=model_name,
+                version=version_to_promote
+            )
+            print(f"\nMLflow model version status:")
+            print(f"Stage: {updated_version.current_stage}")
+            print(f"Status: {updated_version.status}")
+            
+        except Exception as e:
+            print(f"Error managing model: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
     
     def get_production_model_path(self, model_name: str) -> Optional[str]:
         """프로덕션 모델의 저장 경로 반환"""
@@ -448,7 +615,7 @@ class MLflowModelManager:
             experiment_id = latest_model['experiment_id']
             run_id = latest_model['run_id']
             
-            # 두 가지 가능한 경로 확인
+            # 두 지 가능한 경로 확인
             mlruns_path = os.path.join(
                 str(self.config.base_path),
                 'mlruns',
@@ -548,7 +715,7 @@ class MLflowModelManager:
             return None
     
     def get_best_model_info(self, metric: str = "val_f1") -> Optional[Dict]:
-        """최고 성능의 모델 정보 반환"""
+        """최고 성능의 모델 정 반환"""
         try:
             model_infos = self.load_model_info()
             if not model_infos:
