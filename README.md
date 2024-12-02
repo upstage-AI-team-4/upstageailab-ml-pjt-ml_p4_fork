@@ -87,6 +87,9 @@ python train.py
     - `mlartifacts/` 폴더에 모델 파일 등 아티팩트가 저장.
     - `config/model_info.json` 파일에서 등록된 모델의 단계(stage)를 확인.
 
+### 2.8 Streamlit App 실행
+```bash
+streamlit run app.py
 ---
 
 이 가이드를 따라 프로젝트를 실행하고 모델을 학습 및 관리. 필요에 따라 `config.yaml` 파일의 설정을 조정하여 실험을 진행
