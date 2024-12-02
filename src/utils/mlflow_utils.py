@@ -381,32 +381,17 @@ class MLflowModelManager:
             run_id = latest_model['run_id']
             
             # 두 가지 가능한 경로 확인
-            mlruns_path = os.path.join(
-                str(self.config.base_path),
-                'mlruns',
-                experiment_id,
-                run_id,
-                'artifacts/model'
-            )
-            
-            mlartifacts_path = os.path.join(
-                str(self.config.base_path),
-                'mlartifacts',
-                experiment_id,
-                run_id,
-                'artifacts/model'
-            )
+            mlruns_path = self.config.project_root / 'mlruns' / experiment_id / run_id / 'artifacts' / 'model'
+           # mlartifacts_path = self.config.base_path / 'mlartifacts' / experiment_id / run_id / 'artifacts' / 'model'
             
             print(f"Debug: Checking mlruns path: {mlruns_path}")
             print(f"Debug: mlruns path exists: {os.path.exists(mlruns_path)}")
-            print(f"Debug: Checking mlartifacts path: {mlartifacts_path}")
-            print(f"Debug: mlartifacts path exists: {os.path.exists(mlartifacts_path)}")
-            
+            #
             # 존재하는 경로 반환
             if os.path.exists(mlruns_path):
                 return mlruns_path
-            elif os.path.exists(mlartifacts_path):
-                return mlartifacts_path
+            # elif os.path.exists(mlartifacts_path):
+            #     return mlartifacts_path
             else:
                 print("Model path not found in either mlruns or mlartifacts directories")
                 return None

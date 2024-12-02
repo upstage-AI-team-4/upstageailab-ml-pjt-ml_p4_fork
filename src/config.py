@@ -24,6 +24,8 @@ class Config:
         """설정 초기화"""
         # 프로젝트 루트 디렉토리 찾기
         self.project_root = self._find_project_root()
+
+        #self.base_path = self.project_root.parent
         self.config_path = self.project_root / config_path
         self.config = self._load_config()
         
