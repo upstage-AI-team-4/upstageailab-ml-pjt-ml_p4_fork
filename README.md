@@ -28,6 +28,8 @@ project_root/
 ├── mlruns/                  # mlflow artifacts files folder
 ├── init-scripts/
 │   ├── init.sh              # Docker init file
+├── dags/
+│   └── dags.py             # dags script for airflow
 ├── app.py                   # streamlit web gui for model test & management
 ├── requirements.txt 
 ├── README.md
