@@ -13,6 +13,9 @@ from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, Learning
 from pytorch_lightning.loggers import TensorBoardLogger
 import shutil
 
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
+
 from src.config import Config
 from src.data.nsmc_dataset import NSMCDataModule, log_data_info
 from src.utils.mlflow_utils import MLflowModelManager, cleanup_artifacts, initialize_mlflow, setup_mlflow_server
