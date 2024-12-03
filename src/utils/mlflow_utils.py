@@ -148,16 +148,32 @@ class MLflowModelManager:
     
     def promote_to_staging(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
         """모델을 Staging 단계로 승격"""
-        model_version = self.register_model(model_name, run_id, model_uri)
-        
-        self.client.transition_model_version_stage(
-            name=model_name,
-            version=model_version.version,
-            stage="Staging"
-        )
-        
-        print(f"Model: {model_name}, version: {model_version.version} promoted to Staging...")
-        return model_version
+        try:
+            model_version = self.register_model(model_name, run_id, model_uri)
+            
+            # 모델을 Staging으로 변경
+            self.client.transition_model_version_stage(
+                name=model_name,
+                version=model_version.version,
+                stage="Staging"
+            )
+            
+            # model_registry.json 업데이트
+            model_infos = self.load_model_info()
+            for model_info in model_infos:
+                if model_info.get('run_id') == run_id:
+                    model_info['stage'] = "Staging"
+                    
+            # 변경된 정보 저장
+            with open(self.model_info_path, 'w', encoding='utf-8') as f:
+                json.dump(model_infos, f, indent=2, ensure_ascii=False)
+            
+            print(f"Model: {model_name}, version: {model_version.version} promoted to Staging")
+            return model_version
+            
+        except Exception as e:
+            print(f"Error promoting model to staging: {str(e)}")
+            raise
     
     def promote_to_production(self, model_name: str, version: str) -> None:
         """모델을 Production 단계로 승격"""
@@ -194,7 +210,7 @@ class MLflowModelManager:
                 if model_info.get('version') == version:
                     model_info['stage'] = "Production"
                     
-            # 변경된 ��보 저장
+            # 변경된 보 저장
             with open(self.model_info_path, 'w', encoding='utf-8') as f:
                 json.dump(model_infos, f, indent=2, ensure_ascii=False)
             
@@ -205,12 +221,25 @@ class MLflowModelManager:
     def archive_model(self, model_name: str, version: str) -> None:
         """모델을 Archive 단계로 이동"""
         try:
+            # MLflow에서 모델 상태 변경
             self.client.transition_model_version_stage(
                 name=model_name,
                 version=version,
                 stage="Archived"
             )
-            print(f"Model: {model_name}, version: {version} Archived...")
+            
+            # model_registry.json 업데이트
+            model_infos = self.load_model_info()
+            for model_info in model_infos:
+                if model_info.get('version') == version:
+                    model_info['stage'] = "Archived"
+                    
+            # 변경된 정보 저장
+            with open(self.model_info_path, 'w', encoding='utf-8') as f:
+                json.dump(model_infos, f, indent=2, ensure_ascii=False)
+            
+            print(f"Model: {model_name}, version: {version} Archived")
+            
         except Exception as e:
             print(f"Error archiving model: {str(e)}")
             raise
