@@ -9,82 +9,65 @@ project_root/
 ├── src/
 │   ├── config/
 │   │   ├── __init__.py
-│   │   └── config.py          # Configuration management
+│   │   └── config.py             # Configuration management
 │   ├── models/
 │   │   ├── __init__.py
-│   │   └── model.py          # Model architecture definitions
+│   │   └── base_model.py         # Model architecture definitions
 │   ├── utils/
 │   │   ├── __init__.py
-│   │   ├── inferencer.py     # Model inference utilities
-│   │   └── mlflow_utils.py   # MLflow integration utilities
-│   └── train/
+│   │   ├── visualization.py
+│   │   └── mlflow_utils.py      # MLflow integration utilities
+│   └── data/
 │       ├── __init__.py
-│       └── trainer.py        # Model training logic
+│       └── base_dataset.py      
 ├── examples/
 │   └── inference.py          # Example inference script
-├── tests/
-│   ├── __init__.py
-│   └── test_*.py            # Test files
 ├── configs/
-│   └── config.yaml          # Configuration files
-├── requirements.txt
+│   ├── config.yaml          # Configuration files
+│   └── model_registry.json  # Model registry files
+├── mlruns/                  # mlflow artifacts files folder
+├── init-scripts/
+│   ├── init.sh              # Docker init file
+├── app.py                   # streamlit web gui for model test & management
+├── requirements.txt 
 ├── README.md
-└── .env                     # Environment variables
+├── docker-compose.yml 
+├── Dockerfile
+└── .env                     # Environment variables for slack webhook - docker
 ```
 
-## 주요 컴포넌트 설명
-
+## 1.1 주요 컴포넌트 설명
 ### 📁 src
-- **config**: 프로젝트 설정 관리
-- **models**: 모델 아키텍처 정의
-- **utils**: 유틸리티 함수 모음
-- **train**: 학습 관련 로직
-
+- **config.py**: 프로젝트 설정 관리
+- **data/**: 데이터 관련 코드
+- **models/**: 모델 아키텍처 정의
+- **utils/**: 유틸리티 함수 모음
+### 📁 data
+ - raw/: raw data
+     - `data, models 폴더 및 파일이 없는 경우에도 [train.py](http://train.py) 실행시 저절로 데이터,모델 다운받아 실행`
+ - processed/: processed data
+### 📁 models
+- Pretrained models
 ### 📁 examples
 - 모델 추론 예제 스크립트
-
-### 📁 tests
-- 단위 테스트 및 통합 테스트
-
 ### 📁 configs
 - YAML 기반 설정 파일
-
-### 📄 주요 파일
-- `requirements.txt`: 프로젝트 의존성
-- `.env`: 환경 변수
-- `README.md`: 프로젝트 문서
+    - **데이터셋 종류**: 사용할 데이터셋 종류 설정 (기본값: NSMC - 네이버 영화 리뷰)
+    - **모델 설정**: 사용할 모델 및 학습 파라미터 설정 (기본값: KcBERT)
+    - **기타 파라미터**:
+        - `dataset_sampling_rate`: 빠른 실험을 위한 데이터셋 샘플링 비율
+        - `max_length`: 모델 입력의 최대 길이
+        - `register_threshold`: 모델 등록을 위한 최소 기준
+        - `unfrozen_layers`: 학습 시 언프리즈할 레이어 수
+    
+    - `requirements.txt`: 프로젝트 의존성
+    - `.env`: 환경 변수
+    - `README.md`: 프로젝트 문서
+- JSON 기반 Model 관리 파일
 
 ## 개발 환경 설정
-- Python 3.8+
-- Rye를 통한 의존성 관리
+- Python 3.10
 - MLflow를 통한 실험 관리
-
-### 1.1 주요 폴더 및 파일 구조
-
-- **config/**
-    - `config.yaml`: 기본 설정을 구성하는 파일
-        - **데이터셋 종류**: 사용할 데이터셋 종류 설정 (기본값: NSMC - 네이버 영화 리뷰)
-        - **모델 설정**: 사용할 모델 및 학습 파라미터 설정 (기본값: KcBERT)
-        - **기타 파라미터**:
-            - `dataset_sampling_rate`: 빠른 실험을 위한 데이터셋 샘플링 비율
-            - `max_length`: 모델 입력의 최대 길이
-            - `register_threshold`: 모델 등록을 위한 최소 기준
-            - `unfrozen_layers`: 학습 시 언프리즈할 레이어 수
-- **src/**
-    - **models/**: 모델 관련 코드
-    - **data/**: 데이터 처리 관련 코드
-    - **utils/**: 유틸리티 코드
-    - `train.py`: 기본 학습 및 모델 관리 실행 스크립트
-- data/
-    - raw/: raw data
-    - processed/: processed data
-- models/
-    - Pretrained models
-- 
-
-`data, models 폴더 및 파일이 없는 경우에도 [train.py](http://train.py) 실행시 저절로 데이터,모델 다운받아 실행`
-
----
 
 ## 2. 실행 순서
 
@@ -118,10 +101,10 @@ pip install -r requirements.txt
 프로젝트 루트 디렉토리에서 다음 명령어를 실행하여 MLflow UI를 시작
 
 ```bash
-mlflow ui
+mlflow ui --host 127.0.0.1 --port 5050
 ```
 
-브라우저에서 [http://127.0.0.1:5000](http://127.0.0.1:5000/) 에 접속하여 MLflow UI에 접근
+브라우저에서 [http://127.0.0.1:5050](http://127.0.0.1:5050/) 에 접속하여 MLflow UI에 접근
 
 ### 2.5 모델 학습 시작
 
@@ -143,7 +126,7 @@ python train.py
 - **MLflow UI**: 브라우저에서 실험 결과, 메트릭, 파라미터 및 아티팩트를 확인.
 - **폴더 구조**:
     - `mlruns/` 폴더에 실행(run) 관련 로그와 메트릭이 저장.
-    - `mlartifacts/` 폴더에 모델 파일 등 아티팩트가 저장.
+    - `exp id / exp id / artifacts /` 폴더에 모델 파일 등 아티팩트가 저장.
     - `config/model_info.json` 파일에서 등록된 모델의 단계(stage)를 확인.
 
 ### 2.8 Streamlit App 실행
@@ -155,9 +138,9 @@ streamlit run app.py
 
 이 가이드를 따라 프로젝트를 실행하고 모델을 학습 및 관리. 필요에 따라 `config.yaml` 파일의 설정을 조정하여 실험을 진행
 
-# 프로젝트 세부 사항
+## 3. 프로젝트 세부 사항
 
-## 주요 설정 항목 설명
+### 주요 설정 항목 설명
 
 - **데이터셋 종류** (`dataset.name`): 사용할 데이터셋의 이름을 지정. 기본값은 `nsmc`
 - **모델 이름** (`model.name`): 사용할 사전 학습된 모델의 이름을 지정. 기본값은 `KcBER`
@@ -166,7 +149,7 @@ streamlit run app.py
 - **모델 등록 최소 기준** (`model.register_threshold`): 모델을 레지스트리에 등록하기 위한 최소 성능 기준을 설정
 - **언프리즈할 레이어 수** (`model.unfrozen_layers`): 모델 학습 시 업데이트할 레이어의 수를 지정
 
-## 추가 참고 사항
+### 추가 참고 사항
 
 - **환경 설정**: 가상 환경을 사용하여 의존성 충돌을 방지
 - **설정 조정**: `config.yaml` 파일을 수정하여 다양한 실험을 진행
@@ -183,13 +166,6 @@ Airflow를 Docker로 설정하려면 아래 명령어를 실행:
 docker-compose up --build -d
 
 ```
-
-## Airflow 계정 자동 생성
-
-Airflow 초기 설정 시 다음 기본 계정이 자동으로 생성:
-
-- **ID**: `admin`
-- **Password**: `admin`
 
 ---
 
@@ -212,13 +188,20 @@ AIRFLOW__PROVIDERS__SLACK__WEBHOOK_CONN_ID=slack_webhook
 
 ```
 
-Slack Webhook 연결을 위해 Airflow의 Connection ID를 아래와 같이 설정:
+만약 자동 설정이 안되는 경우, Slack Webhook 연결을 위해 Airflow의 Connection ID를 아래와 같이 설정
 
 - **Connection ID**: `slack_webhook`
 - **Token**: `.env` 파일에 설정된 `SLACK_WEBHOOK_TOKEN` 값 사용
 
 ---
 
+## Airflow 계정 자동 생성
+
+Airflow 초기 설정 시 다음 기본 계정이 자동으로 생성:
+
+- **ID**: `admin`
+- **Password**: `admin`
+  
 ## 추가 참고 사항
 
 - `docker-compose.yml` 파일이 제대로 구성되어 있는지 확인.
