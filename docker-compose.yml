@@ -15,6 +15,7 @@ services:
       - "./data:/usr/local/ml4/data"
       - "./src:/usr/local/ml4/src"
       - "./config:/usr/local/ml4/config"
+      - "./mlruns:/usr/local/ml4/mlruns"
     env_file:
       - .env
     environment:
