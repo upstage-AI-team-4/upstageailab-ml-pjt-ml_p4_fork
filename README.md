@@ -4,6 +4,61 @@
 
 ## 1. 프로젝트 구조 및 설정
 
+```plaintext
+project_root/
+├── src/
+│   ├── config/
+│   │   ├── __init__.py
+│   │   └── config.py          # Configuration management
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── model.py          # Model architecture definitions
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── inferencer.py     # Model inference utilities
+│   │   └── mlflow_utils.py   # MLflow integration utilities
+│   └── train/
+│       ├── __init__.py
+│       └── trainer.py        # Model training logic
+├── examples/
+│   └── inference.py          # Example inference script
+├── tests/
+│   ├── __init__.py
+│   └── test_*.py            # Test files
+├── configs/
+│   └── config.yaml          # Configuration files
+├── requirements.txt
+├── README.md
+└── .env                     # Environment variables
+```
+
+## 주요 컴포넌트 설명
+
+### 📁 src
+- **config**: 프로젝트 설정 관리
+- **models**: 모델 아키텍처 정의
+- **utils**: 유틸리티 함수 모음
+- **train**: 학습 관련 로직
+
+### 📁 examples
+- 모델 추론 예제 스크립트
+
+### 📁 tests
+- 단위 테스트 및 통합 테스트
+
+### 📁 configs
+- YAML 기반 설정 파일
+
+### 📄 주요 파일
+- `requirements.txt`: 프로젝트 의존성
+- `.env`: 환경 변수
+- `README.md`: 프로젝트 문서
+
+## 개발 환경 설정
+- Python 3.8+
+- Rye를 통한 의존성 관리
+- MLflow를 통한 실험 관리
+
 ### 1.1 주요 폴더 및 파일 구조
 
 - **config/**
