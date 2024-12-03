@@ -13,7 +13,6 @@ services:
       - "./dags:/usr/local/ml4/dags"
       - "./models:/usr/local/ml4/models"
       - "./data:/usr/local/ml4/data"
-      - "./init-scripts:/init-scripts"
       - "./src:/usr/local/ml4/src"
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
