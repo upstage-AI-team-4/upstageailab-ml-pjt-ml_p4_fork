@@ -97,6 +97,7 @@ def initialize_mlflow(config: Config) -> str:
     # MLflow 실험 설정
     experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
     if experiment is None:
+        
         experiment_id = mlflow.create_experiment(
             name=config.mlflow.experiment_name,
             artifact_location=str(config.mlflow.artifact_location)
