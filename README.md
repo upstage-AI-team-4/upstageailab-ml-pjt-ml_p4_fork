@@ -1,3 +1,7 @@
+# MLOps: Model Management & Docker for Airflow 
+
+# I. Model Management
+
 ## 1. 프로젝트 구조 및 설정
 
 ### 1.1 주요 폴더 및 파일 구조
@@ -113,3 +117,54 @@ streamlit run app.py
 - **설정 조정**: `config.yaml` 파일을 수정하여 다양한 실험을 진행
 - **모델 관리 자동화**: 학습 스크립트 실행 후 자동으로 모델 등록 및 관리 메시지
 - **MLflow 사용**: 실험 추적, 모델 관리 및 배포
+
+# II. Docker for Airflow Setup
+
+## 사용법 및 명령어
+
+Airflow를 Docker로 설정하려면 아래 명령어를 실행하세요:
+
+```bash
+docker-compose up --build -d
+
+```
+
+## Airflow 계정 자동 생성
+
+Airflow 초기 설정 시 다음 기본 계정이 자동으로 생성됩니다:
+
+- **ID**: `admin`
+- **Password**: `admin`
+
+---
+
+## Slack Webhook 설정
+
+Airflow에서 Slack Webhook을 사용하려면 다음 정보를 `.env` 파일에 저장해야 합니다:
+
+### `.env` 파일 예시
+
+```
+env
+코드 복사
+# Slack Webhook Token 설정
+SLACK_WEBHOOK_TOKEN=PUT YOUR SLACK TOKEN
+
+# Airflow 설정
+AIRFLOW__CORE__LOAD_EXAMPLES=False
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////usr/local/ml4/airflow.db
+AIRFLOW__PROVIDERS__SLACK__WEBHOOK_CONN_ID=slack_webhook
+
+```
+
+Slack Webhook 연결을 위해 Airflow의 Connection ID를 아래와 같이 설정합니다:
+
+- **Connection ID**: `slack_webhook`
+- **Token**: `.env` 파일에 설정된 `SLACK_WEBHOOK_TOKEN` 값 사용
+
+---
+
+## 추가 참고 사항
+
+- `docker-compose.yml` 파일이 제대로 구성되어 있는지 확인하세요.
+- Airflow를 실행한 후 웹 UI에서 Slack Webhook Connection 설정이 올바르게 등록되었는지 확인하세요.
