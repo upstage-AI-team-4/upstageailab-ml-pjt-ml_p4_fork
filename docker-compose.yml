@@ -1,11 +1,11 @@
 version: "2.3"
 services:
   airflow:
-    image: ml4-image2
+    image: ml4-image
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: ml4-container2
+    container_name: ml4-container
     ports:
       - "8080:8080"
       - "5050:5050"
