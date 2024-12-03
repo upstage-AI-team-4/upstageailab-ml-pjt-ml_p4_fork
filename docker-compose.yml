@@ -14,6 +14,10 @@ services:
       - "./models:/usr/local/ml4/models"
       - "./data:/usr/local/ml4/data"
       - "./src:/usr/local/ml4/src"
+      - "./config:/usr/local/ml4/config"
+      - "./mlruns:/usr/local/ml4/mlruns"
+    env_file:
+      - .env
     environment:
       - AIRFLOW__CORE__LOAD_EXAMPLES=False
       - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////usr/local/ml4/airflow.db

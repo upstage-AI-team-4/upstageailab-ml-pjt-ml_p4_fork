@@ -97,6 +97,7 @@ def initialize_mlflow(config: Config) -> str:
     # MLflow 실험 설정
     experiment = mlflow.get_experiment_by_name(config.mlflow.experiment_name)
     if experiment is None:
+        
         experiment_id = mlflow.create_experiment(
             name=config.mlflow.experiment_name,
             artifact_location=str(config.mlflow.artifact_location)
@@ -148,69 +149,98 @@ class MLflowModelManager:
     
     def promote_to_staging(self, model_name: str, run_id: str, model_uri: str = 'model') -> ModelVersion:
         """모델을 Staging 단계로 승격"""
-        model_version = self.register_model(model_name, run_id, model_uri)
-        
-        self.client.transition_model_version_stage(
-            name=model_name,
-            version=model_version.version,
-            stage="Staging"
-        )
-        
-        print(f"Model: {model_name}, version: {model_version.version} promoted to Staging...")
-        return model_version
+        try:
+            model_version = self.register_model(model_name, run_id, model_uri)
+            
+            # 모델을 Staging으로 변경
+            self.client.transition_model_version_stage(
+                name=model_name,
+                version=model_version.version,
+                stage="Staging"
+            )
+            
+            # model_registry.json 업데이트
+            model_infos = self.load_model_info()
+            for model_info in model_infos:
+                if model_info.get('run_id') == run_id:
+                    model_info['stage'] = "Staging"
+                    
+            # 변경된 정보 저장
+            with open(self.model_info_path, 'w', encoding='utf-8') as f:
+                json.dump(model_infos, f, indent=2, ensure_ascii=False)
+            
+            print(f"Model: {model_name}, version: {model_version.version} promoted to Staging")
+            return model_version
+            
+        except Exception as e:
+            print(f"Error promoting model to staging: {str(e)}")
+            raise
     
     def promote_to_production(self, model_name: str, version: str) -> None:
         """모델을 Production 단계로 승격"""
         try:
-            # 현재 Production 모델이 있다면 Archived로 변경
-            current_versions = self.client.search_model_versions(f"name='{model_name}'")
-            for v in current_versions:
-                if v.current_stage == "Production":
-                    self.client.transition_model_version_stage(
-                        name=model_name,
-                        version=v.version,
-                        stage="Archived"
-                    )
-                    print(f"Archived previous production model: version {v.version}")
-                    
-                    # model_registry.json에서도 해당 모델의 스테이지를 Archived로 변경
-                    model_infos = self.load_model_info()
-                    for model_info in model_infos:
-                        if (model_info.get('version') == v.version and 
-                            model_info.get('stage') == "Production"):
-                            model_info['stage'] = "Archived"
+            print(f"\nPromoting model {model_name} version {version} to Production")
             
-            # 새 모델을 Production으로 승격
-            self.client.transition_model_version_stage(
+            # MLflow에서 모델 상태 변경
+            client = self.client
+            client.transition_model_version_stage(
                 name=model_name,
                 version=version,
                 stage="Production"
             )
-            print(f"Model {model_name} version {version} promoted to Production")
+            print(f"MLflow model stage updated to Production")
             
-            # model_registry.json에서도 해당 모델의 스테이지를 Production으로 변경
+            # model_registry.json 업데이트
             model_infos = self.load_model_info()
+            print(f"Current model infos: {json.dumps(model_infos, indent=2)}")
+            
+            # 기존 Production 모델들을 Archived로 변경
             for model_info in model_infos:
-                if model_info.get('version') == version:
+                if model_info['stage'] == "Production" and model_info['version'] != version:
+                    model_info['stage'] = "Archived"
+                    print(f"Archived previous production model: version {model_info['version']}")
+            
+            # 선택된 모델을 Production으로 변경
+            for model_info in model_infos:
+                if model_info['version'] == version:
                     model_info['stage'] = "Production"
+                    print(f"Updated selected model to Production: version {version}")
                     
-            # 변경된 ��보 저장
+            # 변경된 정보 저장
             with open(self.model_info_path, 'w', encoding='utf-8') as f:
                 json.dump(model_infos, f, indent=2, ensure_ascii=False)
+            print(f"Updated model_registry.json saved")
+            
+            print(f"Model {model_name} version {version} successfully promoted to Production")
             
         except Exception as e:
             print(f"Error promoting model to production: {str(e)}")
+            import traceback
+            traceback.print_exc()
             raise
     
     def archive_model(self, model_name: str, version: str) -> None:
         """모델을 Archive 단계로 이동"""
         try:
+            # MLflow에서 모델 상태 변경
             self.client.transition_model_version_stage(
                 name=model_name,
                 version=version,
                 stage="Archived"
             )
-            print(f"Model: {model_name}, version: {version} Archived...")
+            
+            # model_registry.json 업데이트
+            model_infos = self.load_model_info()
+            for model_info in model_infos:
+                if model_info.get('version') == version:
+                    model_info['stage'] = "Archived"
+                    
+            # 변경된 정보 저장
+            with open(self.model_info_path, 'w', encoding='utf-8') as f:
+                json.dump(model_infos, f, indent=2, ensure_ascii=False)
+            
+            print(f"Model: {model_name}, version: {version} Archived")
+            
         except Exception as e:
             print(f"Error archiving model: {str(e)}")
             raise
@@ -426,33 +456,67 @@ class MLflowModelManager:
                 
             print(f"\nLoading model from: {model_path}")
             
-            model_pt_path = Path(model_path) / "model.pt"
+            # config.json 로드
             config_path = Path(model_path) / "config.json"
-            
-            if not model_pt_path.exists() or not config_path.exists():
-                print(f"Required files not found:")
-                print(f"  - model.pt exists: {model_pt_path.exists()}")
-                print(f"  - config.json exists: {config_path.exists()}")
-                return None
-            
-            # 모델 상태 딕셔너리 로드
-            state_dict = torch.load(model_pt_path)
-            
-            # 설정 파일 로드
-            with open(config_path, 'r') as f:
-                config = json.load(f)
-            
-            # 모델 초기화 및 가중치 로드
-            if latest_model['run_name'].startswith('KcBERT'):
-                from src.models.kcbert_model import KcBERT
-                model = KcBERT(**self.config.get_model_kwargs())
-            elif latest_model['run_name'].startswith('KcELECTRA'):
-                from src.models.kcelectra_model import KcELECTRA
-                model = KcELECTRA(**self.config.get_model_kwargs())
-            else:
-                print(f"Unknown model type: {latest_model['run_name']}")
+            if not config_path.exists():
+                print(f"Config file not found at: {config_path}")
                 return None
                 
+            with open(config_path, 'r') as f:
+                config = json.load(f)
+                
+            print(f"Loaded config: {config}")
+            
+            # 기본값 설정
+            default_config = {
+                'num_unfreeze_layers': -1,  # 기본값 설정
+                'learning_rate': 2e-5 if 'ELECTRA' in config['model_type'] else 5e-6,
+                'optimizer': 'AdamW',
+                'lr_scheduler': 'cosine' if 'ELECTRA' in config['model_type'] else 'exp',
+                'precision': 16,
+                'batch_size': 32,
+                'accumulate_grad_batches': 2
+            }
+            
+            # config에 없는 키는 기본값으로 설정
+            for key, value in default_config.items():
+                if key not in config:
+                    print(f"Warning: {key} not found in config.json, using default value: {value}")
+                    config[key] = value
+            
+            # 모델 타입에 따라 적절한 클래스 초기화
+            if config['model_type'] == 'KcBERT':
+                from src.models.kcbert_model import KcBERT
+                model = KcBERT(
+                    pretrained_model=config['pretrained_model'],
+                    num_labels=config['num_labels'],
+                    num_unfreeze_layers=config['num_unfreeze_layers']
+                )
+            elif config['model_type'] == 'KcELECTRA':
+                from src.models.kcelectra_model import KcELECTRA
+                model = KcELECTRA(
+                    pretrained_model=config['pretrained_model'],
+                    num_labels=config['num_labels'],
+                    num_unfreeze_layers=config['num_unfreeze_layers']
+                )
+            else:
+                raise ValueError(f"Unknown model type: {config['model_type']}")
+            
+            # 모델 가중치 로드
+            model_pt_path = Path(model_path) / "model.pt"
+            if not model_pt_path.exists():
+                print(f"Model weights file not found at: {model_pt_path}")
+                print(f"Checking directory contents:")
+                print(f"Directory exists: {model_path.exists()}")
+                if model_path.exists():
+                    print(f"Files in directory:")
+                    for file in model_path.iterdir():
+                        print(f"  - {file}")
+                return None
+                
+            # CPU 환경에서도 동작하도록 map_location 추가
+            device = 'cuda' if torch.cuda.is_available() else 'cpu'
+            state_dict = torch.load(model_pt_path, map_location=torch.device(device))
             model.load_state_dict(state_dict)
             model.eval()
             

@@ -52,6 +52,7 @@ class Config:
             'checkpoints_base': self.project_root / 'checkpoints',
             'model_checkpoints': self.project_root / 'checkpoints' / self.project['model_name'],
         }
+        self.models = self.config["models"]
         
         # MLflow 관련 설정
         self.mlflow = MLflowConfig(

@@ -6,6 +6,7 @@ import torch
 import plotly.graph_objects as go
 import pandas as pd
 from datetime import datetime
+import time
 
 def load_model_and_tokenizer(model_info, config):
     """Load selected model and tokenizer"""
@@ -89,7 +90,7 @@ def update_statistics(sentiment: str, confidence: float):
     else:
         st.session_state.negative_count += 1
 
-def add_to_history(text: str, sentiment: str, confidence: float, probabilities: list):
+def add_to_history(text: str, sentiment: str, confidence: float, probabilities: list, model_id: int):
     """Add prediction to history"""
     st.session_state.history.append({
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -97,7 +98,8 @@ def add_to_history(text: str, sentiment: str, confidence: float, probabilities: 
         "sentiment": sentiment,
         "confidence": confidence,
         "negative_prob": probabilities[0],
-        "positive_prob": probabilities[1]
+        "positive_prob": probabilities[1],
+        "model_id": model_id
     })
 
 def display_statistics():
@@ -214,7 +216,8 @@ def display_model_management(model_manager, model_name: str):
                     )
                 
                 st.success(f"모델 스테이지가 {new_stage}로 변경되었습니다.")
-                st.experimental_rerun()
+                time.sleep(5) 
+                st.rerun()
                 
             except Exception as e:
                 st.error(f"스테이지 변경 중 오류가 발생했습니다: {str(e)}")
@@ -260,6 +263,9 @@ def main():
         selected_model_info = model_options[selected_model_name]
         display_model_info(selected_model_info)
         
+        # Get model_id from selected model
+        model_id = production_models.index(selected_model_info) + 1
+        
         # Display statistics
         display_statistics()
         
@@ -294,7 +300,7 @@ def main():
                     # Update statistics and history
                     sentiment = "긍정" if pred_label == 1 else "부정"
                     update_statistics(sentiment, confidence)
-                    add_to_history(text, sentiment, confidence, probs)
+                    add_to_history(text, sentiment, confidence, probs, model_id)
                     
                     # Display results
                     st.subheader("분석 결과")
@@ -364,7 +370,8 @@ def main():
                     "sentiment": "감성",
                     "confidence": "확신도",
                     "negative_prob": "부정 확률",
-                    "positive_prob": "긍정 확률"
+                    "positive_prob": "긍정 확률",
+                    "model_id": "모델 ID"
                 },
                 hide_index=True,
                 use_container_width=True
@@ -375,7 +382,7 @@ def main():
                 st.session_state.total_predictions = 0
                 st.session_state.positive_count = 0
                 st.session_state.negative_count = 0
-                st.experimental_rerun()
+                st.rerun()
         else:
             st.info("아직 분석 기록이 없습니다.")
     
