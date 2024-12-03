@@ -22,6 +22,9 @@ from src.utils.inferencer import ModelInferencer
 from src.train import train_model
 from transformers import AutoTokenizer
 
+
+os.environ['NO_PROXY'] = '*' # mac에서 airflow로 외부 요청할 때 이슈가 있음. 하여 해당 코드 추가 필요
+
 def load_production_model(**context):
     """프로덕션 모델 로드"""
     config = Config()
@@ -137,20 +140,17 @@ def evaluate_and_promote(**context):
 def send_training_start_notification(**context):
     """학습 시작 알림"""
     config = Config()
-    # 모델 선택 및 초기화
-    print(config)
-    model_name = config.project.model_name
-    model_config = config.models[model_name]
+    
     message = f"""
 🚀 *모델 학습 파이프라인 시작*
 • 모델: {config.project['model_name']}
 • 데이터셋: {config.project['dataset_name']}
 • 학습 설정:
-  - Epochs: {model_config.training.epochs}
-  - Batch Size: {model_config.training.batch_size}
-  - Learning Rate: {model_config.training.lr}
-  - Max Length: {model_config.training.max_length}
-  - Optimizer: {model_config.training.optimizer}
+  - Epochs: {config.models[config.project['model_name']]['training']['epochs']}
+  - Batch Size: {config.models[config.project['model_name']]['training']['batch_size']}
+  - Learning Rate: {config.models[config.project['model_name']]['training']['lr']}
+  - Max Length: {config.models[config.project['model_name']]['training']['max_length']}
+  - Optimizer: {config.models[config.project['model_name']]['training']['optimizer']}
 """
     
     # task_id 수정
