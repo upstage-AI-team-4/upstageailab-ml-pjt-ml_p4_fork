@@ -39,7 +39,7 @@ RUN pip install --no-cache-dir \
     joblib \
     tweepy \
     numpy \
-    torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu118 \
+    torch torchvision torchaudio \
     transformers \
     streamlit \
     plotly \
