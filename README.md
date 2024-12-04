@@ -112,18 +112,7 @@ mlflow ui --host 127.0.0.1 --port 5050
 
 
 ### 2.4. Inference 모듈
-```bash
-from src.inference import SentimentPredictor
-predictor = SentimentPredictor() # default: Production (최신 모델)
-texts = ["다시 보고 싶은 영화", "별로에요"]
-results = predictor.predict(texts)
-def predict(
-        self,
-        text: Union[str, List[str]],
-        return_probs: bool = True
-    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
-        """텍스트 감정 예측
-        
+- 구조
         Args:
             text: 입력 텍스트 또는 텍스트 리스트
             return_probs: 확률값 반환 여부
@@ -139,7 +128,13 @@ def predict(
                     '부정': float
                 }
             }
-        """
+- 사용 예시
+```bash
+from src.inference import SentimentPredictor
+predictor = SentimentPredictor() # default: Production (최신 모델)
+texts = ["다시 보고 싶은 영화", "별로에요"]
+results = predictor.predict(texts)
+
 ```
 ### 2.5 모델 학습 시작
 
