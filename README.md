@@ -110,7 +110,8 @@ mlflow ui --host 127.0.0.1 --port 5050
 
 ### 2.3. Train 모듈 
 - 구조
-       Args:
+```bash
+        Args:
             interactive: 대화형 추론 및 모델 관리 기능 활성화 여부 (옵션: default = False)
         Returns:
             dict: 학습 결과 정보
@@ -122,7 +123,7 @@ mlflow ui --host 127.0.0.1 --port 5050
                 'tokenizer': PreTrainedTokenizer,
                 'data_module': NSMCDataModule
             }
-  
+```
 - 사용 예시
 ```bash
 from src.train import SentimentTrainer
@@ -132,6 +133,7 @@ result = trainer.train()
 ```
 ### 2.4. Inference 모듈
 - 구조
+```bash
         Args:
             text: 입력 텍스트 또는 텍스트 리스트
             return_probs: 확률값 반환 여부
@@ -147,6 +149,7 @@ result = trainer.train()
                     '부정': float
                 }
             }
+```
 - 사용 예시
 ```bash
 from src.inference import SentimentPredictor
