@@ -382,7 +382,7 @@ class MLflowModelManager:
             else:
                 print("Invalid choice. Please try again.")
     
-    def get_production_model_path(self, model_name: str) -> Optional[str]:
+    def get_production_model_path(self, model_name: str = 'default') -> Optional[str]:
         """프로덕션 모델의 저장 경로 반환"""
         try:
             print("\nDebug: Finding production model path...")

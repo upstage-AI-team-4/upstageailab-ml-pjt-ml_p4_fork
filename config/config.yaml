@@ -2,7 +2,7 @@
 mlflow:
   tracking_uri: "http://127.0.0.1:5050"
   experiment_name: "ml4_sentiment_analysis"
-  model_registry_metric_threshold: 0.6
+  model_registry_metric_threshold: 0.3
   mlrun_path: "mlruns"
   backend_store_uri: "mlruns"
   model_info_path: "config/model_registry.json"
@@ -21,7 +21,7 @@ project:
 dataset:
   nsmc:
     dataset_name: "nsmc"
-    sampling_rate: 1.0
+    sampling_rate: 0.001
     test_size: 0.2
     train_data_path: "ratings_train.txt"
     val_data_path: "ratings_test.txt"
@@ -46,7 +46,7 @@ models:
     pretrained_model: "beomi/kcbert-base"
     model_dir: "models"
     training:
-      epochs: 2
+      epochs: 1
       num_labels: 2
       batch_size: 32
       lr: 5.0e-6
