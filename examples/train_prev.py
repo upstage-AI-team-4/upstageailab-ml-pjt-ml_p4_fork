@@ -20,7 +20,7 @@ from src.config import Config
 from src.data.nsmc_dataset import NSMCDataModule, log_data_info
 from src.utils.mlflow_utils import MLflowModelManager, cleanup_artifacts, initialize_mlflow, setup_mlflow_server
 from src.utils.evaluator import ModelEvaluator
-from src.inference import SentimentPredictor
+from src.utils.inferencer import ModelInferencer
 from src.utils.visualization import plot_confusion_matrix
 
 # torchvision 관련 경고 무시
@@ -113,7 +113,7 @@ class SentimentTrainer:
             metrics = self._evaluate_model(model, tokenizer, data_module)
             
             # 모델 저장 및 등록
-            if metrics['f1'] > self.config.mlflow.model_registry_metric_threshold:
+            if metrics['val_f1'] > self.config.mlflow.model_registry_metric_threshold:
                 self._save_model(run, model, metrics)
             
             # 임시 파일 정리
@@ -271,12 +271,7 @@ class SentimentTrainer:
         print("\n=== Interactive Inference ===")
         print("Enter your text (or 'q' to quit):")
         
-        # 현재 학습된 모델로 MLflow 모델 레지스트리에서 가져오기
-        predictor = SentimentPredictor(
-            model_name=self.config.project['model_name'],
-            stage="Production",
-            config_path=str(self.config.config_path)
-        )
+        inferencer = ModelInferencer(result['model'], result['tokenizer'])
         
         while True:
             user_input = input("\nText: ").strip()
@@ -286,11 +281,9 @@ class SentimentTrainer:
             if not user_input:
                 continue
                 
-            result = predictor.predict(user_input)
-            print(f"Prediction: {result['label']}")
-            print(f"Confidence: {result['confidence']:.4f}")
-            if 'probs' in result:
-                print(f"Probabilities: 긍정={result['probs']['긍정']:.2f}, 부정={result['probs']['부정']:.2f}")
+            prediction = inferencer.predict(user_input)[0]
+            print(f"Prediction: {'긍정' if prediction['prediction'] == 1 else '부정'}")
+            print(f"Confidence: {prediction['confidence']:.4f}")
         
         # 모델 관리
         if input("\nWould you like to manage models? (y/n): ").lower() == 'y':
@@ -345,7 +338,7 @@ def main():
     print("=" * 50 + "\n")
     
     # 대화형 기능을 활성화하여 학습 실행
-    result = trainer.train(interactive=False)
+    result = trainer.train(interactive=True)
     
     print("\n=== Training completed ===")
     print(f"Run Name: {result['run_name']}")
