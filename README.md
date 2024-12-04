@@ -13,15 +13,17 @@ project_root/
 │   ├── models/
 │   │   ├── __init__.py
 │   │   └── base_model.py         # Model architecture definitions
+│   │   └── kcbert_model.py       # KcBERT Model architecture definitions
 │   ├── utils/
 │   │   ├── __init__.py
 │   │   ├── visualization.py
 │   │   └── mlflow_utils.py      # MLflow integration utilities
 │   └── data/
 │       ├── __init__.py
-│       └── base_dataset.py      
-├── examples/
-│   └── inference.py          # Example inference script
+│       └── base_dataset.py
+│       └── nsmc_dataset.py     # nsmc dataset script
+├── ──  train.py              # train module script
+│   └── inference.py          # inference module script
 ├── configs/
 │   ├── config.yaml          # Configuration files
 │   └── model_registry.json  # Model registry files
@@ -67,13 +69,11 @@ project_root/
     - `README.md`: 프로젝트 문서
 - JSON 기반 Model 관리 파일
 
-## 개발 환경 설정
+## 1.2 개발 환경 설정
 - Python 3.10
 - MLflow를 통한 실험 관리
 
-## 2. 실행 순서
-
-### 2.1 Conda 환경 생성
+### Conda 환경 생성
 
 Python 3.10 버전의 Conda 가상 환경을 생성하고 활성화.
 
@@ -82,23 +82,23 @@ conda create -n ml4 python=3.10
 conda activate ml4
 ```
 
-### 2.2 필요 모듈 설치
+### 필요 모듈 설치
 
 프로젝트에 필요한 의존성 모듈을 설치
 
 ```bash
 pip install -r requirements.txt
 ```
-
-### 2.3 설정 파일 확인 및 수정
+## 2. 실행 순서
+### 2.1 설정 파일 확인 및 수정
 
 `config/config.yaml` 파일을 열어 필요한 설정을 확인하고 실험에 맞게 수정
 
 - **데이터셋 설정**: `dataset` 섹션에서 데이터셋 종류와 샘플링 비율 등을 설정
 - **모델 설정**: `model` 섹션에서 사용할 모델 이름과 학습 파라미터 등을 설정
 - **학습 설정**: `train` 섹션에서 에포크 수, 배치 크기 등을 설정
-
-### 2.4 MLflow 서버 실행
+- 
+### 2.2 MLflow 서버 실행
 
 프로젝트 루트 디렉토리에서 다음 명령어를 실행하여 MLflow UI를 시작
 
@@ -108,6 +108,39 @@ mlflow ui --host 127.0.0.1 --port 5050
 
 브라우저에서 [http://127.0.0.1:5050](http://127.0.0.1:5050/) 에 접속하여 MLflow UI에 접근
 
+### 2.3. Train 모듈 
+
+
+### 2.4. Inference 모듈
+```bash
+from src.inference import SentimentPredictor
+predictor = SentimentPredictor() # default: Production (최신 모델)
+texts = ["다시 보고 싶은 영화", "별로에요"]
+results = predictor.predict(texts)
+def predict(
+        self,
+        text: Union[str, List[str]],
+        return_probs: bool = True
+    ) -> Union[Dict[str, Any], List[Dict[str, Any]]]:
+        """텍스트 감정 예측
+        
+        Args:
+            text: 입력 텍스트 또는 텍스트 리스트
+            return_probs: 확률값 반환 여부
+            
+        Returns:
+            Dict 또는 Dict 리스트: 예측 결과
+            {
+                'text': str,  # 원본 텍스트
+                'label': str,  # '긍정' 또는 '부정'
+                'confidence': float,  # 예측 확신도
+                'probs': {  # 각 레이블별 확률 (return_probs=True인 경우)
+                    '긍정': float,
+                    '부정': float
+                }
+            }
+        """
+```
 ### 2.5 모델 학습 시작
 
 터미널에서 다음 명령어를 실행하여 모델 학습을 시작하거나, IDE에서 `train.py`를 실행:
