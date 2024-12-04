@@ -1,212 +1,292 @@
-[![Review Assignment Due Date](https://classroom.github.com/assets/deadline-readme-button-22041afd0340ce965d47ae6ef1cefeee28c7c493a6346c4f15d667ab976d596c.svg)](https://classroom.github.com/a/znc2XbtA)
-# 트위터 트렌드 분석 및 감성 분류 (모델 생성 및 서빙 & 워크플로우 구축)
-## Team ML 4 < Walk into AI >
+# MLOps:
 
-| ![박정준](https://avatars.githubusercontent.com/u/156163982?v=4) | ![이다언](https://avatars.githubusercontent.com/u/156163982?v=4) | ![김동완](https://avatars.githubusercontent.com/u/156163982?v=4) | ![김묘정](https://avatars.githubusercontent.com/u/156163982?v=4) | ![이현지](https://avatars.githubusercontent.com/u/156163982?v=4) |
-| :--------------------------------------------------------------: | :--------------------------------------------------------------: | :--------------------------------------------------------------: | :--------------------------------------------------------------: | :--------------------------------------------------------------: |
-|            [박정준](https://github.com/UpstageAILab)             |            [이다언](https://github.com/danielinjesus/AI_Portfolio/tree/main/AI_Projects/House_Price_Prediction)             |            [김묘정](https://github.com/UpstageAILab)             |            [이현지](https://github.com/UpstageAILab)             |            [김동완A](https://github.com/UpstageAILab)             |
-|                            팀장, 피처조정 및 선별                             |                         피처엔지니어링                             |           모델링, AutoML                       |                                       베이스라인 코드 분석                   |                                  좌표 데이터 API 수집                        |
-## 0. Overview
+# I. Model Management
 
-pip install -r requriements.txt
+## 1. 프로젝트 구조 및 설정
 
-### Environment
+```plaintext
+project_root/
+├── src/
+│   ├── config/
+│   │   ├── __init__.py
+│   │   └── config.py             # Configuration management
+│   ├── models/
+│   │   ├── __init__.py
+│   │   └── base_model.py         # Model architecture definitions
+│   │   └── kcbert_model.py       # KcBERT Model architecture definitions
+│   ├── utils/
+│   │   ├── __init__.py
+│   │   ├── visualization.py
+│   │   └── mlflow_utils.py      # MLflow integration utilities
+│   └── data/
+│       ├── __init__.py
+│       └── base_dataset.py
+│       └── nsmc_dataset.py     # nsmc dataset script
+├── ──  train.py              # train module script
+│   └── inference.py          # inference module script
+├── configs/
+│   ├── config.yaml          # Configuration files
+│   └── model_registry.json  # Model registry files
+├── mlruns/                  # mlflow artifacts files folder
+├── init-scripts/
+│   ├── init.sh              # Docker init file
+├── dags/
+│   └── dags.py             # dags script for airflow
+├── app.py                   # streamlit web gui for model test & management
+├── requirements.txt 
+├── README.md
+├── docker-compose.yml 
+├── Dockerfile
+└── .env                     # Environment variables for slack webhook - docker
+```
 
-- **IDE 및 코드 편집기**
-    - Visual Studio Code (VS Code)
-    - Cursor IDE
-- **개발 환경**
-    - Linux Docker 서버 및 로컬 환경에서 Python, Jupyter Notebook 사용
-    - Anaconda로 패키지 및 환경 관리
-- **버전 관리 및 협업 도구**
-    - Git을 사용하여 코드 및 파일 버전 관리
-    - GitHub를 통해 팀원들과 협업
+## 1.1 주요 컴포넌트 설명
+### 📁 src
+- **config.py**: 프로젝트 설정 관리
+- **data/**: 데이터 관련 코드
+- **models/**: 모델 아키텍처 정의
+- **utils/**: 유틸리티 함수 모음
+### 📁 data
+ - raw/: raw data
+     - `data, models 폴더 및 파일이 없는 경우에도 [train.py](http://train.py) 실행시 저절로 데이터,모델 다운받아 실행`
+ - processed/: processed data
+### 📁 models
+- Pretrained models
+### 📁 examples
+- 모델 추론 예제 스크립트
+### 📁 configs
+- YAML 기반 설정 파일
+    - **데이터셋 종류**: 사용할 데이터셋 종류 설정 (기본값: NSMC - 네이버 영화 리뷰)
+    - **모델 설정**: 사용할 모델 및 학습 파라미터 설정 (기본값: KcBERT)
+    - **기타 파라미터**:
+        - `dataset_sampling_rate`: 빠른 실험을 위한 데이터셋 샘플링 비율
+        - `max_length`: 모델 입력의 최대 길이
+        - `register_threshold`: 모델 등록을 위한 최소 기준
+        - `unfrozen_layers`: 학습 시 언프리즈할 레이어 수
+    
+    - `requirements.txt`: 프로젝트 의존성
+    - `.env`: 환경 변수
+    - `README.md`: 프로젝트 문서
+- JSON 기반 Model 관리 파일
 
-### Requirements
+## 1.2 개발 환경 설정
+- Python 3.10
+- MLflow를 통한 실험 관리
 
-- **프로그래밍 언어**
-    - Python 3.x
-- **주요 라이브러리 및 패키지**
-    - Pandas
-    - NumPy
-    - Scikit-learn
-    - XGBoost
-    - WandB (Weights & Biases)
-    - Sweetviz
-    - Pygalker
-    - Dataprep
-    - Matplotlib
-    - Seaborn
-- **기타**
-    - Jupyter Notebook
-    - Docker (서버 환경 구축용)
+### Conda 환경 생성
+
+Python 3.10 버전의 Conda 가상 환경을 생성하고 활성화.
+
+```bash
+conda create -n ml4 python=3.10
+conda activate ml4
+```
+
+### 필요 모듈 설치
+
+프로젝트에 필요한 의존성 모듈을 설치
+
+```bash
+pip install -r requirements.txt
+```
+## 2. 실행 순서
+### 2.1 설정 파일 확인 및 수정
+
+`config/config.yaml` 파일을 열어 필요한 설정을 확인하고 실험에 맞게 수정
+
+- **데이터셋 설정**: `dataset` 섹션에서 데이터셋 종류와 샘플링 비율 등을 설정
+- **모델 설정**: `model` 섹션에서 사용할 모델 이름과 학습 파라미터 등을 설정
+- **학습 설정**: `train` 섹션에서 에포크 수, 배치 크기 등을 설정
+- 
+### 2.2 MLflow 서버 실행
+
+프로젝트 루트 디렉토리에서 다음 명령어를 실행하여 MLflow UI를 시작
+
+```bash
+mlflow ui --host 127.0.0.1 --port 5050
+```
+
+브라우저에서 [http://127.0.0.1:5050](http://127.0.0.1:5050/) 에 접속하여 MLflow UI에 접근
+
+### 2.3. Train 모듈 
+- 구조
+```bash
+        Args:
+            interactive: 대화형 추론 및 모델 관리 기능 활성화 여부 (옵션: default = False)
+        Returns:
+            dict: 학습 결과 정보
+            {
+                'run_id': str,
+                'metrics': dict,
+                'run_name': str,
+                'model': PreTrainedModel,
+                'tokenizer': PreTrainedTokenizer,
+                'data_module': NSMCDataModule
+            }
+```
+- 사용 예시
+```bash
+from src.train import SentimentTrainer
+# 기본 학습. 설정은 config.yaml 에서 project 항목
+trainer = SentimentTrainer()
+result = trainer.train()
+```
+### 2.4. Inference 모듈
+- 구조
+```bash
+        Args:
+            text: 입력 텍스트 또는 텍스트 리스트
+            return_probs: 확률값 반환 여부
+            
+        Returns:
+            Dict 또는 Dict 리스트: 예측 결과
+            {
+                'text': str,  # 원본 텍스트
+                'label': str,  # '긍정' 또는 '부정'
+                'confidence': float,  # 예측 확신도
+                'probs': {  # 각 레이블별 확률 (return_probs=True인 경우)
+                    '긍정': float,
+                    '부정': float
+                }
+            }
+```
+- 사용 예시
+```bash
+from src.inference import SentimentPredictor
+predictor = SentimentPredictor() # default: Production (최신 모델)
+texts = ["다시 보고 싶은 영화", "별로에요"]
+results = predictor.predict(texts)
+
+```
+### 2.5 모델 학습 시작
+
+터미널에서 다음 명령어를 실행하여 모델 학습을 시작하거나, IDE에서 `train.py`를 실행:
+
+```bash
+python train.py
+```
+
+### 2.6 모델 관리
+
+학습 완료 후 터미널에 나타나는 모델 관리 관련 메시지에 따라 CLI에서 숫자 또는 `y/n`을 입력하여 모델을 관리.
+
+- **모델 등록**: 모델을 레지스트리에 등록할지 여부 선택
+- **모델 단계 설정**: 모델의 단계(stage)를 설정 (예: None, Staging, Production)
+
+### 2.7 결과 확인
+
+- **MLflow UI**: 브라우저에서 실험 결과, 메트릭, 파라미터 및 아티팩트를 확인.
+- **폴더 구조**:
+    - `mlruns/` 폴더에 실행(run) 관련 로그와 메트릭이 저장.
+    - `exp id / exp id / artifacts /` 폴더에 모델 파일 등 아티팩트가 저장.
+    - `config/model_info.json` 파일에서 등록된 모델의 단계(stage)를 확인.
+
+### 2.8 Streamlit App 실행
+```bash
+streamlit run app.py
+```
 
 ---
 
-## 1. Competition Info
+이 가이드를 따라 프로젝트를 실행하고 모델을 학습 및 관리. 필요에 따라 `config.yaml` 파일의 설정을 조정하여 실험을 진행
 
-### Overview
+## 3. 프로젝트 세부 사항
 
-- **경진대회 주제:** 부동산 가격 예측 모델 개발
-- **목표:** 주어진 데이터를 활용하여 부동산 가격을 정확하게 예측하는 모델을 구축하고 성능을 향상시키는 것
-- **추가 세부 목표: **
--   프로젝트 수행 역량 기르기
+### 주요 설정 항목 설명
 
-### Timeline
+- **데이터셋 종류** (`dataset.name`): 사용할 데이터셋의 이름을 지정. 기본값은 `nsmc`
+- **모델 이름** (`model.name`): 사용할 사전 학습된 모델의 이름을 지정. 기본값은 `KcBER`
+- **데이터셋 샘플링 비율** (`dataset.sampling_rate`): 데이터셋의 일부만 사용하여 빠른 실험을 진행
+- **최대 입력 길이** (`dataset.max_length`): 모델 입력 시퀀스의 최대 길이를 지정
+- **모델 등록 최소 기준** (`model.register_threshold`): 모델을 레지스트리에 등록하기 위한 최소 성능 기준을 설정
+- **언프리즈할 레이어 수** (`model.unfrozen_layers`): 모델 학습 시 업데이트할 레이어의 수를 지정
 
-- **프로젝트 기간:** 총 2주 (수강 1주 포함)
-    - **1주차:** 팀원 역량 강화 및 베이스라인 코드 실행
-    - **2주차:** 모델 개선 및 성능 향상 작업
+### 추가 참고 사항
 
----
+- **환경 설정**: 가상 환경을 사용하여 의존성 충돌을 방지
+- **설정 조정**: `config.yaml` 파일을 수정하여 다양한 실험을 진행
+- **모델 관리 자동화**: 학습 스크립트 실행 후 자동으로 모델 등록 및 관리 메시지
+- **MLflow 사용**: 실험 추적, 모델 관리 및 배포
 
-## 2. Components
+# II. Docker for Airflow Setup
 
-### Directory
+## 사용법 및 명령어
 
-```Python
+Airflow를 Docker로 설정하려면 아래 명령어를 실행:
 
-├── src
-│   ├── preprocess.py
-│   │── feature.py
-│   ├── train.py
-│   └── utils.py
-├── config
-│   └── config.yaml
-│   └── configs.py
-├── output
-│   ├── plots
-│   │── reports
-├── data
-│   ├── preprocessed
-├── notebook
-├── data
-├── main_sweep.py
-├── main_feat_select.py
-├── requirements.txt
-└── README.md
-
+```bash
+docker-compose up --build -d
 
 ```
 
 ---
 
-## 3. Data Description
+## Slack Webhook 설정
 
-### Dataset Overview
+Airflow에서 Slack Webhook을 사용하려면 다음 정보를 `.env` 파일에 저장:
 
-- **메인 데이터셋:** 부동산 거래 데이터
-    - **주요 변수:** 전용면적, 위치 정보, 거래 가격 등
-- **추가 데이터:**
-    - **버스 및 지하철 위치 데이터:** 역세권 여부 및 최단 거리 계산에 활용
-    - **강남 대장 아파트 정보:** 지역적 특성 반영을 위해 추가
+### `.env` 파일 예시
 
-### EDA (Exploratory Data Analysis)
+```
+env
+코드 복사
+# Slack Webhook Token 설정
+SLACK_WEBHOOK_TOKEN=PUT YOUR SLACK TOKEN
 
-- **프로세스:**
-    - **Pandas**를 사용하여 기본 통계량 분석 및 데이터 구조 파악
-    - **Sweetviz**, **Pygalker**, **Dataprep** 등의 라이브러리로 데이터 시각화
-    - 변수 간 상관관계 분석 및 분포 확인
-- **결론:**
-    - **전용면적의 중요성:** 반복적으로 중요한 변수로 선정됨
-        - 분포가 우측으로 치우쳐 있어 상한을 완화하여 성능 개선
-    - **이상치 처리의 영향:** IQR을 활용한 이상치 제거 시 성능 향상 미미
-        - 이상치를 제거하지 않고 모델에 반영하였을 때 성능이 크게 향상됨
-    - **추가 피처의 영향:** 외부 데이터를 활용한 피처 추가는 성능 개선에 큰 영향이 없었음
+# Airflow 설정
+AIRFLOW__CORE__LOAD_EXAMPLES=False
+AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=sqlite:////usr/local/ml4/airflow.db
+AIRFLOW__PROVIDERS__SLACK__WEBHOOK_CONN_ID=slack_webhook
 
-### Data Processing
+```
 
-- **데이터 정제:**
-    - 결측치 처리 및 데이터 일관성 확보
-- **피처 엔지니어링:**
-    - **새로운 피처 생성:** 역세권 여부, 최단 거리 등
-    - **추가 데이터 통합:** 강남 대장 아파트 정보 등
-- **스케일링 및 변환:**
-    - **Robust Scaling**, **Power Transform** 적용 시도
-        - 성능 개선 효과는 미미하여 다른 방법 모색
+만약 자동 설정이 안되는 경우, Slack Webhook 연결을 위해 Airflow의 Connection ID를 아래와 같이 설정
+
+- **Connection ID**: `slack_webhook`
+- **Token**: `.env` 파일에 설정된 `SLACK_WEBHOOK_TOKEN` 값 사용
 
 ---
 
-## 4. Modeling
+## Airflow 계정 자동 생성
 
-### Model Description
+Airflow 초기 설정 시 다음 기본 계정이 자동으로 생성:
 
-- **사용 모델:** XGBoost
-- **선택 이유:**
-    - **우수한 예측 성능:** 순차적 학습 방식을 통해 오차를 보완하며 Random Forest보다 성능 우수
-    - **학습 속도 최적화:** 병렬 처리 및 캐시 최적화를 통한 빠른 학습 가능
-    - **과적합 방지 기능:** L1, L2 정규화 및 다양한 규제 파라미터 제공
+- **ID**: `admin`
+- **Password**: `admin`
+  
+## 추가 참고 사항
 
-### 사용 예시
+- `docker-compose.yml` 파일이 제대로 구성되어 있는지 확인.
+- Airflow를 실행한 후 웹 UI에서 Slack Webhook Connection 설정이 올바르게 등록되었는지 확인.
 
-- 데이터 로드 완료...150000개, 50000개
-샘플링 완료...1500개, 500개
-        id                                           document  label  is_test
-0  8932939                                        수OO만에 다시보네여      1        0
-1  3681731                              일방적인 영화다. 관객 좀 고려해주시길      0        0
-2  9847174                               세상을 초월하는 한 사람의 선한 마음      1        0
-3  8506899             멍하다.. 여러생각이 겹치는데 오랜만에 영화 보고 이런 느낌 느껴본다      1        0
-4  9991656  우와 별 반개도 아까운판에 밑에 CJ 알바생들 쩐다.. 전부 만점이야 ㅎㅎㅎ..,....      0        0
-데이터 전처리 시작...
-d:\dev\twitter\data\naver_movie_review.csv에서 데이터를 로드했습니다.
-text, label 컬럼 확인...
-text 컬럼이 없습니다. document 컬럼을 사용합니다.
-NaN 값 확인 및 처리...
-전처리 전 NaN 값 개수: 0
-전처리 후 NaN 값 개수: 0
-텍스트 정제 시작...
-토큰화 시작...
-빈 문자열 확인 및 처리...
-빈 문자열 개수: 7
-전처리된 데이터를 d:\dev\twitter\data\processed\processed_naver_movie_review.csv에 저장했습니다.
-최종 데이터 크기: 1993 행
-모델을 e:\models\KcBERT에서 로드했습니다.
-데이터를 d:\dev\twitter\data\processed\processed_naver_movie_review.csv에서 로드했습니다.
-데이터 준비 시작...
-전체 데이터 크기: 1993
-빈 문장 제거 후 데이터 크기: 1993
-토큰화 시작...
-학습 데이터: 1594개
-검증 데이터: 399개
-임베딩 레이어가 고정되었습니다.
+# III. Dataset & Model
 
-=== 레이어 고정 상태 ===
-전체 레이어 수: 12
-고정된 레이어 수: 9
-학습에 사용될 레이어 수: 3
+## NSMC (Naver Sentiment Movie Corpus) 데이터셋
 
-=== 파라미터 상태 ===
-전체 파라미터: 108,920,066
-학습 가능한 파라미터: 21,855,746 (20.07%)
-고정된 파라미터: 87,064,320 (79.93%)
----
+- **데이터 출처**: 네이버 영화 리뷰 데이터
+- **데이터 구성**:
+    - **총 데이터 수**: 200,000개
+        - 훈련용 데이터: 150,000개
+        - 테스트용 데이터: 50,000개
+    - **레이블**: 긍정 (1), 부정 (0) 이진 분류
+    - **내용**: 사용자 작성 영화 리뷰와 해당 감성 레이블
+- **특징**:
+    - 한국어 감성 분석을 위한 대표적인 공개 데이터셋
+    - 리뷰는 한글과 공백으로만 구성되어 전처리 필요성이 적음
+- **라이선스**: 공개 라이선스 (출처 표기 필요)
 
-## 5. Result
+## KC-BERT 모델
 
-### Leader Board
-
-- **베이스라인 점수:** 46,433
-- **최종 점수:** 14,844 (베이스라인 대비 약 2배 향상)
-- **순위:** 3등
-
-*(리더보드 캡처 이미지가 있을 경우 첨부)*
-
-### Presentation
-
-- **발표 자료:** [Google Slide 링크](https://docs.google.com/presentation/d/1yZgRoott_eZnF6p2f0CFERun2Yl78FbtjVDjerJ6Zms/edit#slide=id.g314fe61daed_10_89)
-
-### Report
-- **Fast-Up Report:**[Notion 링크](https://www.notion.so/Fast-Up-Team-Report-e11312a2a7f9433eb421031b8e7b337a?pvs=4)
-
-### Meeting Log
-
-- **회의록:** [Notion 링크](https://www.notion.so/6289d8a63f724563b0a470ddece7ff24?v=697ed335fa56441a82df84cdac6099e7&pvs=4)
-
-### Reference
-
-- **모델 관련 문서:**
-    - [XGBoost 공식 문서](https://xgboost.readthedocs.io/)
-    - Scikit-learn Feature Selection
-- **관련 블로그 및 자료:**
-    - 부동산 가격 예측 프로젝트 관련 블로그
-    - 데이터 분석 및 전처리 기법 자료
+- **모델명**: KC-BERT (Korean Comments BERT)
+- **아키텍처**: BERT-base
+- **언어**: 한국어
+- **모델 크기**:
+    - **파라미터 수**: 약 110M (1억 1천만 개)
+- **학습 데이터**:
+    - 한국어 위키백과
+    - 뉴스 기사
+    - 온라인 커뮤니티 댓글 및 SNS 데이터
+- **특징**:
+    - 구어체, 비속어 등 일상 언어에 대한 이해도 향상
+    - 한국어 텍스트의 문맥적 의미 파악에서 우수한 성능 발휘
+- **라이선스**: MIT 라이선스

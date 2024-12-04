@@ -1,358 +1,366 @@
-# main.py
-from utils.twitter_collector import TwitterCollector
-from utils.data_preprocessor import DataPreprocessor
+import os
+import warnings
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
-import pandas as pd
-from models.model_factory import ModelFactory
-import optuna
+import json
 from datetime import datetime
-import logging
-from utils.mlflow_utils import MLflowLogger, MLflowConfig
-from models.model_registry import ModelRegistry
+import mlflow
+import torch
+import pytorch_lightning as pl
+from pytorch_lightning import Trainer, seed_everything
+import transformers
+from transformers import AutoTokenizer
+from pytorch_lightning.callbacks import EarlyStopping, ModelCheckpoint, LearningRateMonitor
+from pytorch_lightning.loggers import TensorBoardLogger
+import shutil
 
-logger = logging.getLogger(__name__)
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
-exp_name = "model_train_optuna"  # 실험 이름
-# dataset
-data_name = 'naver_movie_review'
-sampling_rate = 0.001
-model_register_threshold = 0.6
-#Optuna의 기본 최적화 알고리즘인 Tree-structured Parzen Estimators (TPE)를 사용하고 있습니다. TPE는 베이지안 최적화의 한 종류입
-sampler_type = "tpe"
-n_trials = 2
+from src.config import Config
+from src.data.nsmc_dataset import NSMCDataModule, log_data_info
+from src.utils.mlflow_utils import MLflowModelManager, cleanup_artifacts, initialize_mlflow, setup_mlflow_server
+from src.utils.evaluator import ModelEvaluator
+from src.inference import SentimentPredictor
+from src.utils.visualization import plot_confusion_matrix
 
-class ModelTrainer:
-    """모델 학습을 위한 클래스"""
+# torchvision 관련 경고 무시
+warnings.filterwarnings('ignore', category=UserWarning, module='torchvision')
+# Tensor Core 최적화를 위한 precision 설정
+torch.set_float32_matmul_precision('medium')  # 또는 'high'
+
+class SentimentTrainer:
+    """감성 분석 모델 학습기"""
     
-    def __init__(self, mlflow_logger: MLflowLogger):
-        self.mlflow_logger = mlflow_logger
-        self.registry = ModelRegistry(metric_threshold={'eval_f1': model_register_threshold})
-    
-    def objective(self, 
-                 trial: optuna.Trial, 
-                 model_name: str, 
-                 data_file: Path, 
-                 model_dir: Path,
-                 pretrained_model_name: str, 
-                 pretrained_model_dir: Path) -> float:
-        """Optuna 최적화를 위한 목적 함수"""
-        # Define hyperparameters to optimize
-        train_args = {
-            'learning_rate': trial.suggest_float('learning_rate', 1e-5, 1e-3, log=True),
-            'num_train_epochs': trial.suggest_int('num_train_epochs', 2, 5, 10),
-            'batch_size': trial.suggest_categorical('batch_size', [16, 32])
-        }
-        num_unfrozen_layers = trial.suggest_int('num_unfrozen_layers', 1, 4)
+    def __init__(self, config_path: str = "config/config.yaml"):
+        """
+        Args:
+            config_path: 설정 파일 경로
+        """
+        self.config = Config(config_path)
+        self.setup_mlflow()
         
-        # Create and train model
-        factory = ModelFactory()
-        model = factory.get_model(
-            model_name, 
-            data_file=data_file, 
-            model_dir=model_dir,
-            pretrained_model_name=pretrained_model_name,
-            pretrained_model_dir=pretrained_model_dir
-        )
+    def setup_mlflow(self):
+        """MLflow 설정"""
+        setup_mlflow_server(self.config)
+        self.experiment_id = initialize_mlflow(self.config)
         
-        model.train(train_args=train_args, num_unfrozen_layers=num_unfrozen_layers)
-        metrics = model.evaluate()
+    def cleanup_training_artifacts(self):
+        """학습 완료 후 임시 파일 정리"""
+        print("\nCleaning up training artifacts...")
         
-        return metrics['eval_f1']
-
-    def create_study(self, study_name: str, sampler_type: str = "tpe") -> optuna.Study:
-        """Optuna study 생성
+        # 체크포인트 폴더 삭제
+        checkpoint_path = self.config.paths['model_checkpoints']
+        if checkpoint_path.exists():
+            shutil.rmtree(checkpoint_path)
+            print(f"Removed checkpoints directory: {checkpoint_path}")
+        
+        # 모델 폴더 삭제
+        model_path = self.config.paths['model']
+        if model_path.exists():
+            shutil.rmtree(model_path)
+            print(f"Removed model directory: {model_path}")
+            
+    def train(self, interactive: bool = False) -> dict:
+        """모델 학습 실행
         
         Args:
-            study_name: study 이름
-            sampler_type: 'tpe', 'random', 'grid', 'cmaes' 중 하나
+            interactive: 대화형 추론 및 모델 관리 기능 활성화 여부
+            
+        Returns:
+            dict: 학습 결과 정보
+            {
+                'run_id': str,
+                'metrics': dict,
+                'run_name': str,
+                'model': PreTrainedModel,
+                'tokenizer': PreTrainedTokenizer,
+                'data_module': NSMCDataModule
+            }
         """
-        if sampler_type == "tpe":
-            sampler = optuna.samplers.TPESampler(seed=42)
-        elif sampler_type == "random":
-            sampler = optuna.samplers.RandomSampler(seed=42)
-        elif sampler_type == "grid":
-            sampler = optuna.samplers.GridSampler(
-                {
-                    'learning_rate': [1e-5, 5e-5, 1e-4, 5e-4, 1e-3],
-                    'num_train_epochs': [2, 3, 4, 5],
-                    'batch_size': [16, 32],
-                    'num_unfrozen_layers': [1, 2, 3, 4]
-                }
-            )
-        elif sampler_type == "cmaes":
-            sampler = optuna.samplers.CmaEsSampler(seed=42)
-        else:
-            raise ValueError(f"Unknown sampler type: {sampler_type}")
+        print("=" * 50)
+        print("\n=== Training Configuration ===")
+        print(f"Model: {self.config.project['model_name']}")
+        print(f"Pretrained Model: {self.config.model_config['pretrained_model']}")
+        print(f"Batch Size: {self.config.training_config['batch_size']}")
+        print(f"Learning Rate: {self.config.training_config['lr']}")
+        print(f"Epochs: {self.config.training_config['epochs']}")
+        print(f"Max Length: {self.config.training_config['max_length']}")
+        print("=" * 50 + "\n")
         
-        return optuna.create_study(
-            study_name=study_name,
-            direction="maximize",
-            sampler=sampler
-        )
-
-    def train_model(self, 
-                   model_name: str,
-                   pretrained_model_name: str,
-                   dataset_name: str,
-                   data_file: Path,
-                   base_model_dir: Path,
-                   pretrained_model_dir: Path,
-                   n_trials: int = 2,
-                   sampler_type: str = "tpe") -> Tuple[str, Dict[str, float]]:
-        """모델 학습 및 평가 수행"""
-        logger.info(f"\n=== 모델 학습 시작: {model_name} ===")
+        seed_everything(self.config.project['random_state'])
         
-        # Optuna study 생성
-        study_name = f"{model_name}_{dataset_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        study = self.create_study(study_name, sampler_type)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        run_name = f"{self.config.project['model_name']}_{self.config.project['dataset_name']}_{timestamp}"
         
-        # 하이퍼파라미터 최적화
-        study.optimize(
-            lambda trial: self.objective(
-                trial, 
-                model_name, 
-                data_file, 
-                base_model_dir, 
-                pretrained_model_name,
-                pretrained_model_dir
-            ), 
-            n_trials=n_trials
-        )
-        
-        # MLflow에 하이퍼파라미터 탐색 과정 로깅
-        with self.mlflow_logger.start_run(
-            run_name=self.mlflow_logger.generate_run_name(model_name, "hyperparameter_optimization")
-        ) as run:
-            # 기본 정보 로깅
-            self.mlflow_logger.log_params({
-                "sampler_type": sampler_type,
-                "n_trials": n_trials,
-                "study_name": study_name,
-                "optimization_direction": study.direction.name,
-                "search_space": {
-                    "learning_rate": "log-uniform(1e-5, 1e-3)",
-                    "num_train_epochs": "int(2, 5)",
-                    "batch_size": "categorical[16, 32]",
-                    "num_unfrozen_layers": "int(1, 4)"
-                }
-            })
+        with mlflow.start_run(run_name=run_name) as run:
+            print(f"\n=== Starting new run: {run_name} ===")
             
-            # 최적화 결과 로깅
-            self.mlflow_logger.log_metrics({
-                "best_value": study.best_value,
-                "best_trial_number": study.best_trial.number,
-                "total_trials": len(study.trials),
-                "completed_trials": len([t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]),
-                "failed_trials": len([t for t in study.trials if t.state == optuna.trial.TrialState.FAIL])
-            })
+            # 데이터 모듈 준비
+            tokenizer = AutoTokenizer.from_pretrained(self.config.model_config['pretrained_model'])
+            data_module = NSMCDataModule(config=self.config, tokenizer=tokenizer)
+            data_module.prepare_data()
+            data_module.setup(stage='fit')
+            log_data_info(data_module)
             
-            # 모든 trial의 결과 로깅
-            trial_results = []
-            for trial in study.trials:
-                if trial.state == optuna.trial.TrialState.COMPLETE:
-                    result = {
-                        "number": trial.number,
-                        "value": trial.value,
-                        **trial.params
-                    }
-                    trial_results.append(result)
+            # 모델 초기화
+            model = self._initialize_model()
             
-            # Trial 결과를 DataFrame으로 변환하여 로깅
-            if trial_results:
-                trials_df = pd.DataFrame(trial_results)
-                trials_df.to_csv("hyperparameter_trials.csv", index=False)
-                self.mlflow_logger.log_artifacts("hyperparameter_trials.csv", "hyperparameter_optimization")
+            # 학습 실행
+            trainer = self._create_trainer()
+            trainer.fit(model, data_module)
             
-            # Best trial 정보 로깅
-            self.mlflow_logger.log_params({
-                "best_trial_params": study.best_trial.params,
-                "best_trial_datetime": study.best_trial.datetime_start.strftime('%Y-%m-%d %H:%M:%S')
-            })
+            # 평가
+            metrics = self._evaluate_model(model, tokenizer, data_module)
             
-            # Optuna 시각화 저장 및 로깅
-            try:
-                import optuna.visualization as vis
-                
-                # 최적화 히스토리
-                fig = vis.plot_optimization_history(study)
-                fig.write_html("optimization_history.html")
-                self.mlflow_logger.log_artifacts("optimization_history.html", "hyperparameter_optimization")
-                
-                # 파라미터 중요도
-                fig = vis.plot_param_importances(study)
-                fig.write_html("param_importances.html")
-                self.mlflow_logger.log_artifacts("param_importances.html", "hyperparameter_optimization")
-                
-                # 파라미터 관계
-                fig = vis.plot_parallel_coordinate(study)
-                fig.write_html("parallel_coordinate.html")
-                self.mlflow_logger.log_artifacts("parallel_coordinate.html", "hyperparameter_optimization")
-                
-                # 슬라이스 플롯
-                fig = vis.plot_slice(study)
-                fig.write_html("slice_plot.html")
-                self.mlflow_logger.log_artifacts("slice_plot.html", "hyperparameter_optimization")
-                
-            except Exception as e:
-                logger.warning(f"Optuna visualization failed: {str(e)}")
-        
-        # 최적의 하이퍼파라미터로 최종 모델 학습
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        run_name = self.mlflow_logger.generate_run_name(model_name, "training")
-        
-        with self.mlflow_logger.start_run(run_name=run_name) as run:
-            run_id = run.info.run_id
-            model_dir = base_model_dir / run_id
-            model_dir.mkdir(parents=True, exist_ok=True)
+            # 모델 저장 및 등록
+            if metrics['f1'] > self.config.mlflow.model_registry_metric_threshold:
+                self._save_model(run, model, metrics)
             
-            factory = ModelFactory()
-            model = factory.get_model(
-                model_name, 
-                data_file=data_file, 
-                model_dir=model_dir,
-                pretrained_model_name=pretrained_model_name,
-                pretrained_model_dir=pretrained_model_dir
-            )
+            # 임시 파일 정리
+            self.cleanup_training_artifacts()
             
-            best_params = {
-                'train_args': {
-                    'learning_rate': study.best_params['learning_rate'],
-                    'num_train_epochs': study.best_params['num_train_epochs'],
-                    'batch_size': study.best_params['batch_size']
-                },
-                'num_unfrozen_layers': study.best_params['num_unfrozen_layers']
+            result = {
+                'run_id': run.info.run_id,
+                'metrics': metrics,
+                'run_name': run_name,
+                'model': model,
+                'tokenizer': tokenizer,
+                'data_module': data_module
             }
             
-            model.train(**best_params)
-            metrics = model.evaluate()
+            if interactive:
+                self._run_interactive_features(result)
             
-            # MLflow에 로깅
-            self.mlflow_logger.log_params({
-                **study.best_params,
-                'model_name': model_name,
-                'dataset_name': dataset_name,
-                'run_id': run_id,
-                'timestamp': timestamp
-            })
+            return result
             
-            self.mlflow_logger.log_metrics({
-                'validation_loss': metrics['eval_loss'],
-                'validation_accuracy': metrics['eval_accuracy'],
-                'validation_precision': metrics['eval_precision'],
-                'validation_recall': metrics['eval_recall'],
-                'validation_f1': metrics['eval_f1']
-            })
+    def _initialize_model(self):
+        """모델 초기화"""
+        if self.config.project['model_name'].startswith('KcBERT'):
+            from src.models.kcbert_model import KcBERT
+            model_class = KcBERT
+        elif self.config.project['model_name'].startswith('KcELECTRA'):
+            from src.models.kcelectra_model import KcELECTRA
+            model_class = KcELECTRA
+        else:
+            raise ValueError(f"Unknown model: {self.config.project['model_name']}")
+        
+        return model_class(**self.config.get_model_kwargs())
+        
+    def _create_trainer(self) -> Trainer:
+        """Trainer 객체 생성"""
+        callbacks = [
+            EarlyStopping(
+                monitor='val_loss',
+                patience=3,
+                mode='min',
+                verbose=True
+            ),
+            ModelCheckpoint(
+                dirpath=self.config.checkpoint['dirpath'],
+                filename=self.config.checkpoint['filename'],
+                monitor=self.config.checkpoint['monitor'],
+                mode=self.config.checkpoint['mode'],
+                save_top_k=self.config.checkpoint['save_top_k'],
+                save_last=self.config.checkpoint['save_last'],
+                every_n_epochs=self.config.checkpoint['every_n_epochs']
+            ),
+            LearningRateMonitor(logging_interval='step')
+        ]
+        
+        trainer_kwargs = {
+            'max_epochs': self.config.training_config['epochs'],
+            'accelerator': 'gpu' if torch.cuda.is_available() else 'cpu',
+            'devices': 1,
+            'precision': self.config.training_config.get('precision', 16),
+            'deterministic': True,
+            'gradient_clip_val': 1.0,
+            'accumulate_grad_batches': self.config.training_config.get('accumulate_grad_batches', 1),
+            'strategy': 'auto',
+            'enable_progress_bar': True,
+            'log_every_n_steps': 100,
+            'callbacks': callbacks,
+            'num_sanity_val_steps': 0,
+            'enable_checkpointing': True,
+            'detect_anomaly': False,
+            'inference_mode': True,
+            'logger': TensorBoardLogger(
+                save_dir=self.config.common['trainer']['logger']['save_dir'],
+                name=self.config.common['trainer']['logger']['name'],
+                version=self.config.common['trainer']['logger']['version']
+            )
+        }
+        
+        return Trainer(**trainer_kwargs)
+        
+    def _evaluate_model(self, model, tokenizer, data_module):
+        """모델 평가"""
+        evaluator = ModelEvaluator(model, tokenizer)
+        metrics = evaluator.evaluate_dataset(data_module)
+        
+        print("\n=== Validation Results ===")
+        print(f"Validation Accuracy: {metrics['accuracy']:.4f}")
+        print(f"Validation F1 Score: {metrics['f1']:.4f}")
+        
+        mlflow.log_metrics({
+            "val_accuracy": metrics['accuracy'],
+            "val_f1": metrics['f1']
+        })
+        
+        return metrics
+        
+    def _save_model(self, run, model, metrics):
+        """모델 저장 및 MLflow에 등록"""
+        try:
+            model_path = Path("mlruns") / run.info.experiment_id / run.info.run_id / "artifacts/model"
+            model_path.mkdir(parents=True, exist_ok=True)
             
-            # 모델 저장
-            save_path = model_dir / 'best_model'
-            model.save_model(save_path)
+            # MLflow 포맷으로 저장
+            mlflow.pytorch.save_model(pytorch_model=model, path=str(model_path))
             
-            # MLflow에 모델 등록
-            self.mlflow_logger.log_model_artifacts(
-                model=model.model,
-                tokenizer=model.tokenizer,
-                model_name=model_name,
-                dataset_name=dataset_name
+            # 커스텀 포맷으로 저장
+            torch.save(model.state_dict(), model_path / "model.pt")
+            
+            # 설정 저장
+            model_config = {
+                "model_type": self.config.project['model_name'],
+                "pretrained_model": self.config.model_config['pretrained_model'],
+                "num_labels": self.config.training_config['num_labels'],
+                "max_length": self.config.training_config['max_length'],
+                "batch_size": self.config.training_config['batch_size'],
+                "lr": self.config.training_config['lr'],
+                "epochs": self.config.training_config['epochs'],
+                "random_state": self.config.project['random_state'],
+                "dataset_name": self.config.project['dataset_name'],
+                "sampling_rate": self.config.data['sampling_rate'],
+                "test_size": self.config.data['test_size'],
+                "train_data_path": self.config.data['train_data_path'],
+                "val_data_path": self.config.data['val_data_path'],
+                "column_mapping": self.config.data['column_mapping']
+            }
+            
+            with open(model_path / "config.json", 'w', encoding='utf-8') as f:
+                json.dump(model_config, f, indent=2, ensure_ascii=False)
+            
+            # MLflow에 아티팩트 등록
+            mlflow.log_param("model_path", str(model_path))
+            mlflow.log_artifact(str(model_path / "model.pt"))
+            mlflow.log_artifact(str(model_path / "config.json"))
+            
+            # 모델 레지스트리에 등록
+            model_manager = MLflowModelManager(self.config)
+            model_version = model_manager.register_model(self.config.project['model_name'], run.info.run_id)
+            model_manager.save_model_info(
+                run_id=run.info.run_id,
+                metrics={"val_f1": metrics['f1']},
+                params=self.config.get_model_kwargs(),
+                version=model_version.version
             )
             
-            # 데이터셋 정보 로깅
-            train_df = model.train_dataset.to_pandas()
-            val_df = model.val_dataset.to_pandas()
+        except Exception as e:
+            print(f"Error during model saving: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            raise
             
-            self.mlflow_logger.log_dataset(
-                train_df,
-                context="training",
-                dataset_name=dataset_name
-            )
-            self.mlflow_logger.log_dataset(
-                val_df,
-                context="validation",
-                dataset_name=dataset_name
-            )
-            
-            # 모델 평가 및 등록
-            self.registry.evaluate_and_register(run_id, model_name)
-            
-            logger.info(f"\n=== 학습 완료 ===")
-            logger.info(f"Run ID: {run_id}")
-            logger.info(f"Model path: {model_dir}")
-            logger.info(f"Best parameters: {study.best_params}")
-            logger.info(f"Validation F1: {metrics['eval_f1']:.4f}")
-            
-            return run_id, metrics
-
-def main():
-    # MLflow 설정
-    
-    mlflow_config = MLflowConfig(experiment_name=exp_name)
-    mlflow_logger = MLflowLogger(mlflow_config)
-    mlflow_logger.setup_experiment()  # 실험 설정 명시적 호출
-    
-    trainer = ModelTrainer(mlflow_logger)
-    
-    # 데이터 준비
-    
-    
-    
-    base_dir = Path(__file__).parent
-    data_dir = base_dir.parent / 'data'
-    
-    data_prep = DataPreprocessor(data_dir=data_dir)
-    if data_name == 'naver_movie_review':
-        data_prep.prep_naver_data(sampling_rate=sampling_rate)
-        preped_file_path = data_prep.preprocess()
-    else:
-        logger.error('error. no data name')
-        return
-    
-    # 모델 설정
-    models_config = {
-        'KcELECTRA': 'beomi/KcELECTRA-base',
-        'KcBERT': 'beomi/kcbert-base'
-    }
-    
-    # 모델 디렉토리 설정
-    models_dir = base_dir.parent / 'models'
-    pretrained_models_dir = models_dir / 'pretrained'
-    fine_tuned_models_dir = models_dir / 'finetuned'
-    models_dir.mkdir(parents=True, exist_ok=True)
-    pretrained_models_dir.mkdir(parents=True, exist_ok=True)
-    fine_tuned_models_dir.mkdir(parents=True, exist_ok=True)
-    
-    # 각 모델 학습
-    results = {}
-    total_models = len(models_config)
-    for idx, (model_name, pretrained_model_name) in enumerate(models_config.items(), 1):
-        logger.info(f"\n=== Training {model_name} ({idx}/{total_models}) ===")
+    def _run_interactive_features(self, result):
+        """대화형 추론 및 모델 관리 기능 실행"""
+        # 샘플 예측 출력
+        self._show_sample_predictions(result)
         
-        base_model_dir = fine_tuned_models_dir / model_name
-        base_model_dir.mkdir(parents=True, exist_ok=True)
+        # 대화형 추론
+        print("\n=== Interactive Inference ===")
+        print("Enter your text (or 'q' to quit):")
         
-        pretrained_model_dir = pretrained_models_dir / model_name
-        pretrained_model_dir.mkdir(parents=True, exist_ok=True)
-        
-        run_id, metrics = trainer.train_model(
-            model_name=model_name,
-            pretrained_model_name=pretrained_model_name,
-            dataset_name=data_name,
-            data_file=preped_file_path,
-            base_model_dir=base_model_dir,
-            pretrained_model_dir=pretrained_model_dir,
-            n_trials=n_trials,
-            sampler_type=sampler_type
-
+        # 현재 학습된 모델로 MLflow 모델 레지스트리에서 가져오기
+        predictor = SentimentPredictor(
+            model_name=self.config.project['model_name'],
+            stage="Production",
+            config_path=str(self.config.config_path)
         )
         
-        results[model_name] = {'run_id': run_id, 'metrics': metrics}
+        while True:
+            user_input = input("\nText: ").strip()
+            if user_input.lower() == 'q':
+                break
+                
+            if not user_input:
+                continue
+                
+            result = predictor.predict(user_input)
+            print(f"Prediction: {result['label']}")
+            print(f"Confidence: {result['confidence']:.4f}")
+            if 'probs' in result:
+                print(f"Probabilities: 긍정={result['probs']['긍정']:.2f}, 부정={result['probs']['부정']:.2f}")
+        
+        # 모델 관리
+        if input("\nWould you like to manage models? (y/n): ").lower() == 'y':
+            model_manager = MLflowModelManager(self.config)
+            model_manager.manage_model(self.config.project['model_name'])
+            
+    def _show_sample_predictions(self, result):
+        """검증 데이터셋에서 샘플 예측 출력"""
+        print("\n=== Validation Sample Predictions ===")
+        
+        val_dataset = result['data_module'].val_dataset
+        n_samples = 5
+        indices = torch.randperm(len(val_dataset))[:n_samples].tolist()
+        
+        model = result['model']
+        model.eval()
+        
+        with torch.no_grad():
+            for idx in indices:
+                text = val_dataset.texts[idx]
+                true_label = val_dataset.labels[idx]
+                
+                sample = val_dataset[idx]
+                inputs = {
+                    'input_ids': sample['input_ids'].unsqueeze(0).to(model.device),
+                    'attention_mask': sample['attention_mask'].unsqueeze(0).to(model.device)
+                }
+                
+                outputs = model(**inputs)
+                logits = outputs.logits
+                probs = torch.softmax(logits, dim=-1)
+                pred_label = torch.argmax(logits, dim=-1).item()
+                confidence = probs[0][pred_label].item()
+                
+                print("\nText:", text)
+                print(f"True Label: {'긍정' if true_label == 1 else '부정'}")
+                print(f"Prediction: {'긍정' if pred_label == 1 else '부정'}")
+                print(f"Confidence: {confidence:.4f}")
+                print(f"Correct: {'O' if pred_label == true_label else 'X'}")
+                print("-" * 80)
+
+def main():
+    """커맨드 라인에서 실행할 때의 메인 함수"""
+    trainer = SentimentTrainer()
     
-    # 결과 요약 출력
-    logger.info("\n=== 전체 학습 결과 요약 ===")
-    for model_name, result in results.items():
-        logger.info(f"\n{model_name}:")
-        logger.info(f"Run ID: {result['run_id']}")
-        logger.info(f"F1 Score: {result['metrics']['eval_f1']:.4f}")
+    print('\n' * 3)
+    print("=" * 50)
+    print("\n=== MLflow Configuration ===")
+    print(f"MLflow Tracking URI: {trainer.config.mlflow.tracking_uri}")
+    print(f"MLflow Run Path: {trainer.config.mlflow.mlrun_path}")
+    print(f"MLflow Experiment Name: {trainer.config.mlflow.experiment_name}")
+    print("=" * 50 + "\n")
+    
+    # 대화형 기능을 활성화하여 학습 실행
+    result = trainer.train(interactive=False)
+    
+    print("\n=== Training completed ===")
+    print(f"Run Name: {result['run_name']}")
+    print(f"Run ID: {result['run_id']}")
+    print("Validation metrics:")
+    for metric_name, value in result['metrics'].items():
+        if isinstance(value, float):
+            print(f"  {metric_name}: {value:.4f}")
+    
+    print("\n=== MLflow Run Information ===")
+    print(f"Run logs and artifacts: {Path(trainer.config.mlflow.mlrun_path) / result['run_id']}")
+    print("=" * 50)
+    
+    cleanup_artifacts(trainer.config, result['metrics'], result['run_id'])
 
 if __name__ == '__main__':
-    logging.basicConfig(level=logging.INFO)
     main()
+
