@@ -109,8 +109,27 @@ mlflow ui --host 127.0.0.1 --port 5050
 브라우저에서 [http://127.0.0.1:5050](http://127.0.0.1:5050/) 에 접속하여 MLflow UI에 접근
 
 ### 2.3. Train 모듈 
-
-
+- 구조
+       Args:
+            interactive: 대화형 추론 및 모델 관리 기능 활성화 여부 (옵션: default = False)
+        Returns:
+            dict: 학습 결과 정보
+            {
+                'run_id': str,
+                'metrics': dict,
+                'run_name': str,
+                'model': PreTrainedModel,
+                'tokenizer': PreTrainedTokenizer,
+                'data_module': NSMCDataModule
+            }
+  
+- 사용 예시
+```bash
+from src.train import SentimentTrainer
+# 기본 학습. 설정은 config.yaml 에서 project 항목
+trainer = SentimentTrainer()
+result = trainer.train()
+```
 ### 2.4. Inference 모듈
 - 구조
         Args:
