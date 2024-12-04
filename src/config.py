@@ -167,8 +167,8 @@ class Config:
     def get_data_paths(self) -> Dict[str, Path]:
         """데이터 파일 경로 반환"""
         return {
-            "train": self.paths["raw_data"] / self.data["train_data_path"],
-            "val": self.paths["raw_data"] / self.data["val_data_path"]
+            "train": self.project_root / self.paths["raw_data"] / self.data["train_data_path"],
+            "val": self.project_root / self.paths["raw_data"] / self.data["val_data_path"]
         }
     
     def get_column_mapping(self) -> Dict[str, str]:
